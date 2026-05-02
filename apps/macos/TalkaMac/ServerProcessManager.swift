@@ -38,10 +38,14 @@ final class ServerProcessManager: ObservableObject {
         do {
             configURL = try configGenerator.generateConfig()
         } catch {
+            lastError = "Failed to generate server config: \(error.localizedDescription)"
             return
         }
 
-        guard let serverURL = locateServer() else { return }
+        guard let serverURL = locateServer() else {
+            lastError = "Server executable not found in app bundle"
+            return
+        }
 
         restartCount = 0
         launch(executableURL: serverURL, configPath: configURL.path)
@@ -135,7 +139,9 @@ final class ServerProcessManager: ObservableObject {
             try process.run()
             self.process = process
             isRunning = true
-        } catch {}
+        } catch {
+            lastError = "Failed to launch server: \(error.localizedDescription)"
+        }
     }
 
     private func handleTermination(exitCode: Int32, configPath: String) {

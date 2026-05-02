@@ -101,13 +101,9 @@ func (cfg Config) Validate(baseDir string) error {
 		appendIssue("server.service_name", cfg.Server.ServiceName, "must not be empty")
 	}
 
-	if strings.TrimSpace(cfg.ASR.Provider) == "" {
+	asrProvider := strings.ToLower(strings.TrimSpace(cfg.ASR.Provider))
+	if asrProvider == "" {
 		appendIssue("asr.provider", cfg.ASR.Provider, "must not be empty")
-	}
-	if strings.TrimSpace(cfg.ASR.RuntimePath) == "" {
-		appendIssue("asr.runtime_path", cfg.ASR.RuntimePath, "must not be empty")
-	} else if err := mustExist(baseDir, cfg.ASR.RuntimePath); err != nil {
-		appendIssue("asr.runtime_path", cfg.ASR.RuntimePath, err.Error())
 	}
 	if strings.TrimSpace(cfg.ASR.Host) == "" {
 		appendIssue("asr.host", cfg.ASR.Host, "must not be empty")
@@ -121,19 +117,29 @@ func (cfg Config) Validate(baseDir string) error {
 	if cfg.ASR.SampleRate != 16000 {
 		appendIssue("asr.sample_rate", fmt.Sprintf("%d", cfg.ASR.SampleRate), "must be 16000 for the local ASR contract")
 	}
-	validatePath := func(field, value string) {
-		if strings.TrimSpace(value) == "" {
-			appendIssue(field, value, "must not be empty")
-			return
+
+	// runtime_path and model paths are only required for funasr_onnx provider.
+	// Sidecar provider connects to an external ASR runtime and needs neither.
+	if asrProvider == "funasr_onnx" || asrProvider == "" {
+		if strings.TrimSpace(cfg.ASR.RuntimePath) == "" {
+			appendIssue("asr.runtime_path", cfg.ASR.RuntimePath, "must not be empty")
+		} else if err := mustExist(baseDir, cfg.ASR.RuntimePath); err != nil {
+			appendIssue("asr.runtime_path", cfg.ASR.RuntimePath, err.Error())
 		}
-		if err := mustExist(baseDir, value); err != nil {
-			appendIssue(field, value, err.Error())
+		validatePath := func(field, value string) {
+			if strings.TrimSpace(value) == "" {
+				appendIssue(field, value, "must not be empty")
+				return
+			}
+			if err := mustExist(baseDir, value); err != nil {
+				appendIssue(field, value, err.Error())
+			}
 		}
+		validatePath("asr.models.asr", cfg.ASR.Models.ASR)
+		validatePath("asr.models.vad", cfg.ASR.Models.VAD)
+		validatePath("asr.models.punc", cfg.ASR.Models.Punc)
+		validatePath("asr.models.itn", cfg.ASR.Models.ITN)
 	}
-	validatePath("asr.models.asr", cfg.ASR.Models.ASR)
-	validatePath("asr.models.vad", cfg.ASR.Models.VAD)
-	validatePath("asr.models.punc", cfg.ASR.Models.Punc)
-	validatePath("asr.models.itn", cfg.ASR.Models.ITN)
 
 	if strings.TrimSpace(cfg.LLM.Provider) == "" {
 		appendIssue("llm.provider", cfg.LLM.Provider, "must not be empty")

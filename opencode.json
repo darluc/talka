@@ -1,0 +1,23 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+	"opencode-openai-codex-auth",
+	"file:///Users/darluc/.config/opencode/node_modules/oh-my-opencode/dist/index.js"
+  ],
+  "mcp": {
+  	"akshare-one-mcp": { "enabled": false },
+  	"yahoo-finance-mcp": { "enabled": false },
+    "ios-simulator": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "ios-simulator-mcp@^1.3.3"
+      ],
+      "enabled": true,
+      "environment": {
+        "IOS_SIMULATOR_MCP_DEFAULT_OUTPUT_DIR": "/tmp"
+      }
+    }
+  }
+}

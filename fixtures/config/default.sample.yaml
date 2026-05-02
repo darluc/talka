@@ -1,0 +1,32 @@
+server:
+  bind_host: 0.0.0.0
+  port: 0
+  service_name: Talka
+
+asr:
+  provider: funasr_onnx
+  runtime_path: runtime
+  host: 127.0.0.1
+  port: 10095
+  mode: twopass
+  sample_rate: 16000
+  models:
+    asr: models/funasr/paraformer-zh-onnx
+    vad: models/funasr/fsmn-vad-onnx
+    punc: models/funasr/ct-punc-onnx
+    itn: models/funasr/itn-zh
+
+llm:
+  provider: ollama
+  base_url: http://localhost:11434
+  model: qwen3:8b
+  timeout_seconds: 30
+
+injection:
+  mode: clipboard_paste
+  restore_clipboard: true
+
+logging:
+  level: info
+  capture_audio: false
+  capture_transcript: false

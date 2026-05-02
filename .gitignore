@@ -1,0 +1,41 @@
+# Build outputs
+.DS_Store
+DerivedData/
+build/
+dist/
+*.log
+
+# Opencode
+.sisyphus/
+
+# Go
+bin/
+coverage.out
+
+# Swift / Xcode
+*.xcuserstate
+xcuserdata/
+
+# Models: keep manifests, ignore heavy assets
+models/funasr/*
+!models/funasr/.gitkeep
+!models/funasr/README.md
+!models/funasr/checksums.txt
+!models/funasr/paraformer-zh-onnx/
+models/funasr/paraformer-zh-onnx/*
+!models/funasr/paraformer-zh-onnx/.gitkeep
+!models/funasr/fsmn-vad-onnx/
+models/funasr/fsmn-vad-onnx/*
+!models/funasr/fsmn-vad-onnx/.gitkeep
+!models/funasr/ct-punc-onnx/
+models/funasr/ct-punc-onnx/*
+!models/funasr/ct-punc-onnx/.gitkeep
+!models/funasr/itn-zh/
+models/funasr/itn-zh/*
+!models/funasr/itn-zh/.gitkeep
+
+# Runtime fixtures and local artifacts
+fixtures/audio/*.wav
+fixtures/audio/*.pcm
+fixtures/audio/*.m4a
+fixtures/private/**

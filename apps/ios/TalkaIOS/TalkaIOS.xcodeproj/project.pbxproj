@@ -1,0 +1,321 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B00000000000000000000031 /* TalkaIOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000011 /* TalkaIOSApp.swift */; };
+		B00000000000000000000032 /* TalkaIOSTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000012 /* TalkaIOSTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B00000000000000000000041 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B00000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B00000000000000000000021;
+			remoteInfo = TalkaIOS;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		B00000000000000000000011 /* TalkaIOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkaIOSApp.swift; sourceTree = "<group>"; };
+		B00000000000000000000012 /* TalkaIOSTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkaIOSTests.swift; sourceTree = "<group>"; };
+		B00000000000000000000013 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B00000000000000000000014 /* Tests-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		B00000000000000000000015 /* TalkaIOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TalkaIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B00000000000000000000016 /* TalkaIOSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TalkaIOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		B00000000000000000000050 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B00000000000000000000051 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		B00000000000000000000002 = {
+			isa = PBXGroup;
+			children = (
+				B00000000000000000000003 /* TalkaIOS */,
+				B00000000000000000000004 /* TalkaIOSTests */,
+				B00000000000000000000005 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		B00000000000000000000003 /* TalkaIOS */ = {
+			isa = PBXGroup;
+			children = (
+				B00000000000000000000011 /* TalkaIOSApp.swift */,
+				B00000000000000000000013 /* Info.plist */,
+			);
+			path = "";
+			sourceTree = "<group>";
+		};
+		B00000000000000000000004 /* TalkaIOSTests */ = {
+			isa = PBXGroup;
+			children = (
+				B00000000000000000000012 /* TalkaIOSTests.swift */,
+				B00000000000000000000014 /* Tests-Info.plist */,
+			);
+			path = Tests;
+			sourceTree = "<group>";
+		};
+		B00000000000000000000005 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B00000000000000000000015 /* TalkaIOS.app */,
+				B00000000000000000000016 /* TalkaIOSTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		B00000000000000000000021 /* TalkaIOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B00000000000000000000061 /* Build configuration list for PBXNativeTarget "TalkaIOS" */;
+			buildPhases = (
+				B00000000000000000000071 /* Sources */,
+				B00000000000000000000050 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TalkaIOS;
+			productName = TalkaIOS;
+			productReference = B00000000000000000000015 /* TalkaIOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+		B00000000000000000000022 /* TalkaIOSTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B00000000000000000000062 /* Build configuration list for PBXNativeTarget "TalkaIOSTests" */;
+			buildPhases = (
+				B00000000000000000000072 /* Sources */,
+				B00000000000000000000051 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B00000000000000000000042 /* PBXTargetDependency */,
+			);
+			name = TalkaIOSTests;
+			productName = TalkaIOSTests;
+			productReference = B00000000000000000000016 /* TalkaIOSTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		B00000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					B00000000000000000000021 = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					B00000000000000000000022 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = B00000000000000000000021;
+					};
+				};
+			};
+			buildConfigurationList = B00000000000000000000060 /* Build configuration list for PBXProject "TalkaIOS" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = B00000000000000000000002;
+			productRefGroup = B00000000000000000000005 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				B00000000000000000000021 /* TalkaIOS */,
+				B00000000000000000000022 /* TalkaIOSTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		B00000000000000000000071 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B00000000000000000000031 /* TalkaIOSApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B00000000000000000000072 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B00000000000000000000032 /* TalkaIOSTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B00000000000000000000042 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B00000000000000000000021 /* TalkaIOS */;
+			targetProxy = B00000000000000000000041 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		B00000000000000000000080 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.talka.ios;
+				PRODUCT_NAME = TalkaIOS;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B00000000000000000000081 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.talka.ios;
+				PRODUCT_NAME = TalkaIOS;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		B00000000000000000000082 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				ENABLE_TESTABILITY = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Tests/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.talka.ios.tests;
+				PRODUCT_NAME = TalkaIOSTests;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TalkaIOS.app/TalkaIOS";
+				TEST_TARGET_NAME = TalkaIOS;
+			};
+			name = Debug;
+		};
+		B00000000000000000000083 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Tests/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = dev.talka.ios.tests;
+				PRODUCT_NAME = TalkaIOSTests;
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/TalkaIOS.app/TalkaIOS";
+				TEST_TARGET_NAME = TalkaIOS;
+			};
+			name = Release;
+		};
+		B00000000000000000000084 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		B00000000000000000000085 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		B00000000000000000000060 /* Build configuration list for PBXProject "TalkaIOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B00000000000000000000084 /* Debug */,
+				B00000000000000000000085 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B00000000000000000000061 /* Build configuration list for PBXNativeTarget "TalkaIOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B00000000000000000000080 /* Debug */,
+				B00000000000000000000081 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B00000000000000000000062 /* Build configuration list for PBXNativeTarget "TalkaIOSTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B00000000000000000000082 /* Debug */,
+				B00000000000000000000083 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = B00000000000000000000001 /* Project object */;
+}

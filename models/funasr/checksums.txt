@@ -1,0 +1,5 @@
+# name sha256 url
+paraformer-zh-onnx REPLACE_WITH_SHA256 https://example.invalid/funasr/paraformer-zh-onnx.tar.gz
+fsmn-vad-onnx REPLACE_WITH_SHA256 https://example.invalid/funasr/fsmn-vad-onnx.tar.gz
+ct-punc-onnx REPLACE_WITH_SHA256 https://example.invalid/funasr/ct-punc-onnx.tar.gz
+itn-zh REPLACE_WITH_SHA256 https://example.invalid/funasr/itn-zh.tar.gz

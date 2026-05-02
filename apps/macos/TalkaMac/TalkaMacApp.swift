@@ -885,13 +885,18 @@ final class AppShellViewModel: ObservableObject {
 @main
 struct TalkaMacApp: App {
     @StateObject private var viewModel = AppShellViewModel(client: LiveControlAPIClient())
+    @StateObject private var serverManager = ServerProcessManager(configGenerator: SidecarRuntimeConfigGenerator())
 
     var body: some Scene {
         MenuBarExtra(viewModel.menuBarTitle, systemImage: viewModel.serviceDisplayState.symbolName) {
-            MenuBarContentView(viewModel: viewModel)
+            MenuBarContentView(viewModel: viewModel, serverManager: serverManager)
                 .frame(minWidth: ShellMetrics.minUtilityWidth)
                 .task {
+                    await serverManager.start()
                     await viewModel.refreshIfNeeded()
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    serverManager.terminate()
                 }
         }
         .menuBarExtraStyle(.window)
@@ -924,50 +929,65 @@ struct TalkaMacApp: App {
 
 struct MenuBarContentView: View {
     @ObservedObject var viewModel: AppShellViewModel
+    @ObservedObject var serverManager: ServerProcessManager
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        VStack(alignment: .leading, spacing: ShellMetrics.panelSpacing) {
-            StatusSummaryCard(viewModel: viewModel)
+        Group {
+            if serverManager.isRunning {
+                VStack(alignment: .leading, spacing: ShellMetrics.panelSpacing) {
+                    StatusSummaryCard(viewModel: viewModel)
 
-            VStack(alignment: .leading, spacing: ShellMetrics.sectionSpacing) {
-                Button("Refresh Status") {
-                    Task {
-                        await viewModel.refresh()
+                    VStack(alignment: .leading, spacing: ShellMetrics.sectionSpacing) {
+                        Button("Refresh Status") {
+                            Task {
+                                await viewModel.refresh()
+                            }
+                        }
+
+                        Button("Start Pairing") {
+                            openWindow(id: ShellWindowID.pairing)
+                            Task {
+                                await viewModel.startPairing()
+                            }
+                        }
+
+                        Button("Accessibility Guidance") {
+                            Task {
+                                await viewModel.requestAccessibilityGuidance()
+                            }
+                        }
+
+                        Button("Diagnostics") {
+                            openWindow(id: ShellWindowID.diagnostics)
+                        }
+
+                        SettingsLink {
+                            Text("Settings")
+                        }
+                    }
+
+                    if let actionTitle = viewModel.recoveryActionTitle {
+                        Button(actionTitle) {
+                            Task {
+                                await viewModel.performRecoveryAction()
+                            }
+                        }
                     }
                 }
-
-                Button("Start Pairing") {
-                    openWindow(id: ShellWindowID.pairing)
-                    Task {
-                        await viewModel.startPairing()
-                    }
+                .padding(ShellMetrics.contentPadding)
+            } else {
+                VStack(spacing: 8) {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                    Text("Talka Server Starting...")
+                        .font(.body)
+                        .foregroundStyle(.secondary)
                 }
-
-                Button("Accessibility Guidance") {
-                    Task {
-                        await viewModel.requestAccessibilityGuidance()
-                    }
-                }
-
-                Button("Diagnostics") {
-                    openWindow(id: ShellWindowID.diagnostics)
-                }
-
-                SettingsLink {
-                    Text("Settings")
-                }
-            }
-
-            if let actionTitle = viewModel.recoveryActionTitle {
-                Button(actionTitle) {
-                    Task {
-                        await viewModel.performRecoveryAction()
-                    }
-                }
+                .frame(minWidth: ShellMetrics.minUtilityWidth)
+                .padding(ShellMetrics.contentPadding)
             }
         }
-        .padding(ShellMetrics.contentPadding)
     }
 }
 

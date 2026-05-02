@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		A00000000000000000000031 /* TalkaMacApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000011 /* TalkaMacApp.swift */; };
 		A00000000000000000000032 /* TalkaMacTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000012 /* TalkaMacTests.swift */; };
+		A00000000000000000000033 /* ServerProcessManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000017 /* ServerProcessManager.swift */; };
+		A00000000000000000000101 /* RuntimeConfigGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000100 /* RuntimeConfigGenerator.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -24,6 +26,8 @@
 /* Begin PBXFileReference section */
 		A00000000000000000000011 /* TalkaMacApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkaMacApp.swift; sourceTree = "<group>"; };
 		A00000000000000000000012 /* TalkaMacTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TalkaMacTests.swift; sourceTree = "<group>"; };
+		A00000000000000000000017 /* ServerProcessManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerProcessManager.swift; sourceTree = "<group>"; };
+		A00000000000000000000100 /* RuntimeConfigGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuntimeConfigGenerator.swift; sourceTree = "<group>"; };
 		A00000000000000000000013 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A00000000000000000000014 /* Tests-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A00000000000000000000015 /* TalkaMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TalkaMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -47,6 +51,29 @@
 		};
 /* End PBXFrameworksBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		A00000000000000000000090 /* Build Go Binaries */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../../scripts/build-go-binaries.sh",
+				"$(SRCROOT)/../../cmd/talka-server/main.go",
+				"$(SRCROOT)/../../cmd/talka-asr-runtime/main.go",
+			);
+			name = "Build Go Binaries";
+			outputPaths = (
+				"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/talka-server",
+				"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/talka-asr-runtime",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "cd ${PROJECT_DIR}/../.. && ./scripts/build-go-binaries.sh --output-dir \"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\" --for-bundle";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXGroup section */
 		A00000000000000000000002 = {
 			isa = PBXGroup;
@@ -61,6 +88,8 @@
 			isa = PBXGroup;
 			children = (
 				A00000000000000000000011 /* TalkaMacApp.swift */,
+				A00000000000000000000017 /* ServerProcessManager.swift */,
+				A00000000000000000000100 /* RuntimeConfigGenerator.swift */,
 				A00000000000000000000013 /* Info.plist */,
 			);
 			path = "";
@@ -91,6 +120,7 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = A00000000000000000000061 /* Build configuration list for PBXNativeTarget "TalkaMac" */;
 			buildPhases = (
+				A00000000000000000000090 /* Build Go Binaries */,
 				A00000000000000000000071 /* Sources */,
 				A00000000000000000000050 /* Frameworks */,
 			);
@@ -164,6 +194,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A00000000000000000000031 /* TalkaMacApp.swift in Sources */,
+				A00000000000000000000033 /* ServerProcessManager.swift in Sources */,
+				A00000000000000000000101 /* RuntimeConfigGenerator.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

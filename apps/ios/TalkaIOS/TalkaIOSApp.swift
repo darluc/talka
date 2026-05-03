@@ -1127,7 +1127,8 @@ final class SecureAudioStreamClient: AudioStreamClient {
 
     func sendAudioStart(metadata: AudioStreamMetadata) async throws {
         streamID = UUID().uuidString
-        nextSequence = 1
+        // Do NOT reset nextSequence here. Session-scoped seq must monotonically
+        // increase across all audio streams for the server-side replay guard.
         let session = try activeSession()
         let task = urlSession.webSocketTask(with: session.audioWebSocketURL)
         webSocket = task

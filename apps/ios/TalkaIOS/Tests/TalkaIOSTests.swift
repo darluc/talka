@@ -1,4 +1,5 @@
 import AVFoundation
+import CryptoKit
 import SwiftUI
 import XCTest
 @testable import TalkaIOS
@@ -343,6 +344,113 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertTrue(environment.sessionClient is SecureRemotePairingSessionClient)
         XCTAssertTrue(environment.audioStreamClient is SecureAudioStreamClient)
         XCTAssertTrue(environment.identityStore is KeychainPairedIdentityStore)
+    }
+
+    func testSecureAudioStreamClientKeepsEncryptedSequenceMonotonicAcrossRecordingsInSameSession() async throws {
+        let sessionStore = SecureAudioSessionStore()
+        sessionStore.save(makeSecureAudioSession(id: "session-a", url: "ws://127.0.0.1/session-a"))
+        let connector = RecordingSecureAudioWebSocketConnector()
+        let client = SecureAudioStreamClient(
+            sessionStore: sessionStore,
+            webSocketConnector: connector
+        )
+
+        try await client.sendAudioStart(metadata: .talkaDefault)
+        try await client.sendAudioFrame(sequence: 1, payload: Data([1, 2, 3]))
+        try await client.sendAudioStop(lastSequence: 1)
+        try await client.sendAudioStart(metadata: .talkaDefault)
+        try await client.sendAudioFrame(sequence: 1, payload: Data([4, 5, 6]))
+        try await client.sendAudioStop(lastSequence: 1)
+
+        XCTAssertEqual(recordedEncryptedSequences(in: connector), [1, 2, 3, 4, 5, 6])
+        XCTAssertEqual(connector.createdTasks.count, 2)
+    }
+
+    func testSecureAudioStreamClientResetsEncryptedSequenceWhenSecureSessionChanges() async throws {
+        let sessionStore = SecureAudioSessionStore()
+        sessionStore.save(makeSecureAudioSession(id: "session-a", url: "ws://127.0.0.1/session-a"))
+        let connector = RecordingSecureAudioWebSocketConnector()
+        let client = SecureAudioStreamClient(
+            sessionStore: sessionStore,
+            webSocketConnector: connector
+        )
+
+        try await client.sendAudioStart(metadata: .talkaDefault)
+        try await client.sendAudioStop(lastSequence: 0)
+
+        sessionStore.save(makeSecureAudioSession(id: "session-b", url: "ws://127.0.0.1/session-b"))
+
+        try await client.sendAudioStart(metadata: .talkaDefault)
+        try await client.sendAudioStop(lastSequence: 0)
+
+        XCTAssertEqual(recordedEncryptedSequences(in: connector), [1, 2, 1, 2])
+        XCTAssertEqual(recordedEncryptedSessionIDs(in: connector), ["c2Vzc2lvbi1h", "c2Vzc2lvbi1h", "c2Vzc2lvbi1i", "c2Vzc2lvbi1i"])
+    }
+
+    func testSecureAudioStreamClientPinsCurrentRecordingToItsStartingSecureSession() async throws {
+        let sessionStore = SecureAudioSessionStore()
+        sessionStore.save(makeSecureAudioSession(id: "session-a", url: "ws://127.0.0.1/session-a"))
+        let connector = RecordingSecureAudioWebSocketConnector()
+        let client = SecureAudioStreamClient(
+            sessionStore: sessionStore,
+            webSocketConnector: connector
+        )
+
+        try await client.sendAudioStart(metadata: .talkaDefault)
+        sessionStore.save(makeSecureAudioSession(id: "session-b", url: "ws://127.0.0.1/session-b"))
+        try await client.sendAudioFrame(sequence: 1, payload: Data([1, 2, 3]))
+        try await client.sendAudioStop(lastSequence: 1)
+
+        XCTAssertEqual(recordedEncryptedSessionIDs(in: connector), ["c2Vzc2lvbi1h", "c2Vzc2lvbi1h", "c2Vzc2lvbi1h"])
+        XCTAssertEqual(connector.createdTasks.map(\.url.absoluteString), ["ws://127.0.0.1/session-a"])
+    }
+
+    func testSecureAudioStreamClientWaitsForServerAcknowledgementBeforeClosingSocket() async throws {
+        let sessionStore = SecureAudioSessionStore()
+        sessionStore.save(makeSecureAudioSession(id: "session-a", url: "ws://127.0.0.1/session-a"))
+        let connector = RecordingSecureAudioWebSocketConnector()
+        let client = SecureAudioStreamClient(
+            sessionStore: sessionStore,
+            webSocketConnector: connector
+        )
+
+        try await client.sendAudioStart(metadata: .talkaDefault)
+        let task = try XCTUnwrap(connector.createdTasks.first)
+        task.queuedReceiveResults = [.success(#"{"ok":true,"final_text":"你好，世界"}"#)]
+
+        try await client.sendAudioStop(lastSequence: 0)
+
+        XCTAssertEqual(task.receiveCalls, 1)
+        XCTAssertEqual(task.eventLog, ["resume", "send", "send", "receive", "cancel"])
+    }
+
+    func testSecureAudioStreamClientThrowsServerAudioStopError() async throws {
+        let sessionStore = SecureAudioSessionStore()
+        sessionStore.save(makeSecureAudioSession(id: "session-a", url: "ws://127.0.0.1/session-a"))
+        let connector = RecordingSecureAudioWebSocketConnector()
+        let client = SecureAudioStreamClient(
+            sessionStore: sessionStore,
+            webSocketConnector: connector
+        )
+
+        try await client.sendAudioStart(metadata: .talkaDefault)
+        let task = try XCTUnwrap(connector.createdTasks.first)
+        task.queuedReceiveResults = [.success(#"{"ok":false,"error":{"code":"accessibility_missing","message":"Talka needs Accessibility or Automation permission before it can paste into other apps."}}"#)]
+
+        do {
+            try await client.sendAudioStop(lastSequence: 0)
+            XCTFail("sendAudioStop(lastSequence:) error = nil, want server error")
+        } catch let error as RemoteMicFlowError {
+            XCTAssertEqual(
+                error,
+                .recordingFailed("Talka needs Accessibility or Automation permission before it can paste into other apps.")
+            )
+        } catch {
+            XCTFail("sendAudioStop(lastSequence:) error = \(error), want RemoteMicFlowError")
+        }
+
+        XCTAssertEqual(task.receiveCalls, 1)
+        XCTAssertEqual(task.cancelCalls, 1)
     }
 
     func testProductionEnvironmentDoesNotStartBonjourBrowsingDuringCreation() {
@@ -864,6 +972,102 @@ private enum AudioStreamEvent: Equatable {
     case frame(sequence: Int, byteCount: Int)
     case stop(lastSequence: Int)
     case cancel(reason: String)
+}
+
+private final class RecordingSecureAudioWebSocketConnector: SecureAudioWebSocketConnecting {
+    private(set) var createdTasks: [RecordingSecureAudioWebSocketTask] = []
+
+    func makeWebSocketTask(url: URL) -> SecureAudioWebSocketTasking {
+        let task = RecordingSecureAudioWebSocketTask(url: url)
+        createdTasks.append(task)
+        return task
+    }
+}
+
+private final class RecordingSecureAudioWebSocketTask: SecureAudioWebSocketTasking {
+    let url: URL
+    private(set) var didResume = false
+    private(set) var sentTexts: [String] = []
+    private(set) var cancelCalls = 0
+    private(set) var receiveCalls = 0
+    private(set) var eventLog: [String] = []
+    var queuedReceiveResults: [Result<String, Error>] = []
+
+    init(url: URL) {
+        self.url = url
+    }
+
+    func resume() {
+        didResume = true
+        eventLog.append("resume")
+    }
+
+    func send(_ text: String) async throws {
+        sentTexts.append(text)
+        eventLog.append("send")
+    }
+
+    func receive() async throws -> String {
+        receiveCalls += 1
+        eventLog.append("receive")
+        if queuedReceiveResults.isEmpty {
+            return #"{"ok":true}"#
+        }
+        return try queuedReceiveResults.removeFirst().get()
+    }
+
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+        _ = closeCode
+        _ = reason
+        cancelCalls += 1
+        eventLog.append("cancel")
+    }
+}
+
+private func makeSecureAudioSession(id: String, url: String) -> SecureAudioSessionKeys {
+    SecureAudioSessionKeys(
+        sessionID: Data(id.utf8),
+        clientToServerKey: SymmetricKey(data: Data(repeating: 7, count: 32)),
+        audioWebSocketURL: URL(string: url)!
+    )
+}
+
+private func recordedEncryptedSequences(in connector: RecordingSecureAudioWebSocketConnector) -> [UInt64] {
+    connector.createdTasks
+        .flatMap(\.sentTexts)
+        .compactMap(decodeEncryptedAudioMessage)
+        .map(\.seq)
+}
+
+private func recordedEncryptedSessionIDs(in connector: RecordingSecureAudioWebSocketConnector) -> [String] {
+    connector.createdTasks
+        .flatMap(\.sentTexts)
+        .compactMap(decodeEncryptedAudioMessage)
+        .map(\.sessionID)
+}
+
+private func decodeEncryptedAudioMessage(_ text: String) -> SecureEncryptedAudioMessage? {
+    guard
+        let payload = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+        let versionNumber = payload["version"] as? NSNumber,
+        let sessionID = payload["session_id"] as? String,
+        let seqNumber = payload["seq"] as? NSNumber,
+        let type = payload["type"] as? String,
+        let nonce = payload["nonce"] as? String,
+        let ciphertext = payload["ciphertext"] as? String,
+        let tag = payload["tag"] as? String
+    else {
+        return nil
+    }
+    return SecureEncryptedAudioMessage(
+        version: versionNumber.uint8Value,
+        sessionID: sessionID,
+        seq: seqNumber.uint64Value,
+        type: type,
+        nonce: nonce,
+        ciphertext: ciphertext,
+        tag: tag
+    )
 }
 
 private final class FakeBonjourServiceBrowser: BonjourNetServiceBrowsing {

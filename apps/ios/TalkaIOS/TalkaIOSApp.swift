@@ -1008,10 +1008,81 @@ struct SecureEncryptedAudioMessage: Encodable {
     }
 }
 
+struct SecureAudioWebSocketServerError: Decodable {
+    let code: String
+    let message: String
+}
+
+struct SecureAudioWebSocketServerResponse: Decodable {
+    let ok: Bool
+    let error: SecureAudioWebSocketServerError?
+    let finalText: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case error
+        case finalText = "final_text"
+    }
+}
+
 struct SecureAudioSessionKeys {
     let sessionID: Data
     let clientToServerKey: SymmetricKey
     let audioWebSocketURL: URL
+}
+
+protocol SecureAudioWebSocketTasking: AnyObject {
+    func resume()
+    func send(_ text: String) async throws
+    func receive() async throws -> String
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
+}
+
+protocol SecureAudioWebSocketConnecting {
+    func makeWebSocketTask(url: URL) -> SecureAudioWebSocketTasking
+}
+
+final class URLSessionSecureAudioWebSocketTask: SecureAudioWebSocketTasking {
+    private let task: URLSessionWebSocketTask
+
+    init(task: URLSessionWebSocketTask) {
+        self.task = task
+    }
+
+    func resume() {
+        task.resume()
+    }
+
+    func send(_ text: String) async throws {
+        try await task.send(.string(text))
+    }
+
+    func receive() async throws -> String {
+        let message = try await task.receive()
+        switch message {
+        case let .string(text):
+            return text
+        case let .data(data):
+            guard let text = String(data: data, encoding: .utf8) else {
+                throw RemoteMicFlowError.recordingFailed("The Mac returned an invalid audio response.")
+            }
+            return text
+        @unknown default:
+            throw RemoteMicFlowError.recordingFailed("The Mac returned an unsupported audio response.")
+        }
+    }
+
+    func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+        task.cancel(with: closeCode, reason: reason)
+    }
+}
+
+struct URLSessionSecureAudioWebSocketConnector: SecureAudioWebSocketConnecting {
+    let urlSession: URLSession
+
+    func makeWebSocketTask(url: URL) -> SecureAudioWebSocketTasking {
+        URLSessionSecureAudioWebSocketTask(task: urlSession.webSocketTask(with: url))
+    }
 }
 
 final class SecureAudioSessionStore {
@@ -1117,50 +1188,85 @@ final class SecureAudioStreamClient: AudioStreamClient {
     var urlSession: URLSession = .shared
     private var streamID = UUID().uuidString
     private var nextSequence: UInt64 = 1
-    private var webSocket: URLSessionWebSocketTask?
+    private var webSocket: SecureAudioWebSocketTasking?
+    private var currentStreamSession: SecureAudioSessionKeys?
+    private var encryptedSessionID: Data?
     private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+    private let webSocketConnector: SecureAudioWebSocketConnecting
 
-    init(sessionStore: SecureAudioSessionStore, urlSession: URLSession = .shared) {
+    init(
+        sessionStore: SecureAudioSessionStore,
+        urlSession: URLSession = .shared,
+        webSocketConnector: SecureAudioWebSocketConnecting? = nil
+    ) {
         self.sessionStore = sessionStore
         self.urlSession = urlSession
+        self.webSocketConnector = webSocketConnector ?? URLSessionSecureAudioWebSocketConnector(urlSession: urlSession)
     }
 
     func sendAudioStart(metadata: AudioStreamMetadata) async throws {
         streamID = UUID().uuidString
-        // Do NOT reset nextSequence here. Session-scoped seq must monotonically
-        // increase across all audio streams for the server-side replay guard.
-        let session = try activeSession()
-        let task = urlSession.webSocketTask(with: session.audioWebSocketURL)
+        let session = try prepareStreamSession()
+        let task = webSocketConnector.makeWebSocketTask(url: session.audioWebSocketURL)
         webSocket = task
+        currentStreamSession = session
         task.resume()
-        try await send(type: "audio_start", payload: ["version": "v1alpha1", "type": "audio_start", "session_id": session.sessionID.base64EncodedString(), "stream_id": streamID, "metadata": ["sample_rate": metadata.sampleRate, "channels": metadata.channels, "encoding": metadata.encoding, "frame_duration_ms": metadata.frameDurationMS, "language": metadata.language]] as [String: Any])
+        try await send(type: "audio_start", payload: ["version": "v1alpha1", "type": "audio_start", "session_id": session.sessionID.base64EncodedString(), "stream_id": streamID, "metadata": ["sample_rate": metadata.sampleRate, "channels": metadata.channels, "encoding": metadata.encoding, "frame_duration_ms": metadata.frameDurationMS, "language": metadata.language]] as [String: Any], session: session)
     }
 
     func sendAudioFrame(sequence: Int, payload: Data) async throws {
-        let session = try activeSession()
-        try await send(type: "audio_frame", payload: ["version": "v1alpha1", "type": "audio_frame", "session_id": session.sessionID.base64EncodedString(), "stream_id": streamID, "sequence": sequence, "payload_b64": payload.base64EncodedString()] as [String: Any])
+        let session = try streamSession()
+        try await send(type: "audio_frame", payload: ["version": "v1alpha1", "type": "audio_frame", "session_id": session.sessionID.base64EncodedString(), "stream_id": streamID, "sequence": sequence, "payload_b64": payload.base64EncodedString()] as [String: Any], session: session)
     }
 
     func sendAudioStop(lastSequence: Int) async throws {
-        let session = try activeSession()
-        try await send(type: "audio_stop", payload: ["version": "v1alpha1", "type": "audio_stop", "session_id": session.sessionID.base64EncodedString(), "stream_id": streamID, "last_sequence": lastSequence] as [String: Any])
-        webSocket?.cancel(with: .normalClosure, reason: nil)
-        webSocket = nil
+        let session = try streamSession()
+        let task = try activeWebSocket()
+        defer { closeCurrentStream() }
+        try await send(type: "audio_stop", payload: ["version": "v1alpha1", "type": "audio_stop", "session_id": session.sessionID.base64EncodedString(), "stream_id": streamID, "last_sequence": lastSequence] as [String: Any], session: session)
+        let responseText: String
+        do {
+            responseText = try await task.receive()
+        } catch {
+            throw RemoteMicFlowError.recordingFailed("The Mac closed the audio session before returning a result.")
+        }
+        let response: SecureAudioWebSocketServerResponse
+        do {
+            response = try decoder.decode(SecureAudioWebSocketServerResponse.self, from: Data(responseText.utf8))
+        } catch {
+            throw RemoteMicFlowError.recordingFailed("The Mac returned an invalid audio response.")
+        }
+        guard response.ok else {
+            let error = response.error
+            if error?.code == "replayed_sequence" || error?.code == "out_of_order_sequence" {
+                clearSecureSession()
+            }
+            throw RemoteMicFlowError.recordingFailed(error?.message ?? "The Mac could not finish processing this recording.")
+        }
     }
 
     func sendAudioCancel(reason: String) async throws {
         _ = reason
         webSocket?.cancel(with: .normalClosure, reason: nil)
         webSocket = nil
+        currentStreamSession = nil
     }
 
-    private func send(type: String, payload: [String: Any]) async throws {
-        let session = try activeSession()
+    private func send(type: String, payload: [String: Any], session: SecureAudioSessionKeys) async throws {
         let plaintext = try JSONSerialization.data(withJSONObject: payload)
+        print("[Talka] encrypting type=\(type) with seq=\(nextSequence)")
         let encrypted = try TalkaSecureTransport.encrypt(type: type, plaintext: plaintext, session: session, seq: nextSequence)
         nextSequence += 1
         let data = try encoder.encode(encrypted)
-        try await (webSocket ?? urlSession.webSocketTask(with: session.audioWebSocketURL)).send(.string(String(decoding: data, as: UTF8.self)))
+        try await (webSocket ?? webSocketConnector.makeWebSocketTask(url: session.audioWebSocketURL)).send(String(decoding: data, as: UTF8.self))
+    }
+
+    private func activeWebSocket() throws -> SecureAudioWebSocketTasking {
+        guard let webSocket else {
+            throw RemoteMicFlowError.recordingFailed("Secure audio session is not established. Pair or reconnect first.")
+        }
+        return webSocket
     }
 
     private func activeSession() throws -> SecureAudioSessionKeys {
@@ -1168,6 +1274,34 @@ final class SecureAudioStreamClient: AudioStreamClient {
             throw RemoteMicFlowError.recordingFailed("Secure audio session is not established. Pair or reconnect first.")
         }
         return session
+    }
+
+    private func prepareStreamSession() throws -> SecureAudioSessionKeys {
+        let session = try activeSession()
+        if encryptedSessionID != session.sessionID {
+            encryptedSessionID = session.sessionID
+            nextSequence = 1
+        }
+        return session
+    }
+
+    private func streamSession() throws -> SecureAudioSessionKeys {
+        guard let session = currentStreamSession else {
+            throw RemoteMicFlowError.recordingFailed("Secure audio session is not established. Pair or reconnect first.")
+        }
+        return session
+    }
+
+    private func closeCurrentStream() {
+        webSocket?.cancel(with: .normalClosure, reason: nil)
+        webSocket = nil
+        currentStreamSession = nil
+    }
+
+    private func clearSecureSession() {
+        sessionStore.clear()
+        encryptedSessionID = nil
+        nextSequence = 1
     }
 }
 

@@ -139,12 +139,12 @@ func (a *App) ProcessEncryptedIOSAudioSession(ctx context.Context, deviceID stri
 		return ProcessResult{}, err
 	}
 	a.logger.Info("iOS audio session decrypted", "device_id", deviceID, "encrypted_messages", len(messages), "frames", len(frames), "sample_rate", metadata.SampleRate, "channels", metadata.Channels, "encoding", metadata.Encoding, "frame_duration_ms", metadata.FrameDurationMS)
-	result, err := pipeline.ProcessAudioFrames(ctx, metadata, frames)
+	result, err := pipeline.PrepareAudioFrames(ctx, metadata, frames)
 	if err != nil {
 		a.logger.Error("iOS audio pipeline failed", "device_id", deviceID, "frames", len(frames), "error", err)
 		return ProcessResult{}, err
 	}
-	a.logger.Info("iOS audio pipeline completed", "device_id", deviceID, "frames", len(frames), "raw_transcript_chars", len(result.RawTranscript), "final_text_chars", len(result.FinalText))
+	a.logger.Info("iOS audio pipeline prepared final text", "device_id", deviceID, "frames", len(frames), "raw_transcript_chars", len(result.RawTranscript), "final_text_chars", len(result.FinalText))
 	return result, nil
 }
 

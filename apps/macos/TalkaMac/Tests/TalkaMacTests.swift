@@ -353,6 +353,55 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertNil(logging["captureTranscript"])
     }
 
+    func testPortReuseActionStartsProxyWhenExistingTalkaServerHasNoProxy() throws {
+        let response = try Self.httpResponse(
+            url: URL(string: "http://127.0.0.1:8080/v1/status")!,
+            body: #"{"service_name":"Talka","state":"running"}"#
+        )
+
+        let action = try XCTUnwrap(
+            ServerProcessManager.portReuseAction(
+                data: response.1,
+                response: response.0,
+                proxyPortInUse: false
+            )
+        )
+
+        XCTAssertEqual(action, .reuseExistingServer(startProxy: true))
+    }
+
+    func testPortReuseActionSkipsProxyWhenExistingTalkaServerAlreadyHasProxy() throws {
+        let response = try Self.httpResponse(
+            url: URL(string: "http://127.0.0.1:8080/v1/status")!,
+            body: #"{"service_name":"Talka","state":"running"}"#
+        )
+
+        let action = try XCTUnwrap(
+            ServerProcessManager.portReuseAction(
+                data: response.1,
+                response: response.0,
+                proxyPortInUse: true
+            )
+        )
+
+        XCTAssertEqual(action, .reuseExistingServer(startProxy: false))
+    }
+
+    func testPortReuseActionRejectsNonTalkaServer() throws {
+        let response = try Self.httpResponse(
+            url: URL(string: "http://127.0.0.1:8080/v1/status")!,
+            body: #"{"service_name":"SomethingElse"}"#
+        )
+
+        XCTAssertNil(
+            ServerProcessManager.portReuseAction(
+                data: response.1,
+                response: response.0,
+                proxyPortInUse: false
+            )
+        )
+    }
+
     private func makeLiveClient(handler: @escaping @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)) -> LiveControlAPIClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
@@ -362,7 +411,10 @@ final class TalkaMacTests: XCTestCase {
     }
 
     nonisolated private static func httpResponse(body: String, statusCode: Int = 200) throws -> (HTTPURLResponse, Data) {
-        let url = try XCTUnwrap(URL(string: "http://127.0.0.1:8080/v1/config"))
+        try httpResponse(url: XCTUnwrap(URL(string: "http://127.0.0.1:8080/v1/config")), body: body, statusCode: statusCode)
+    }
+
+    nonisolated private static func httpResponse(url: URL, body: String, statusCode: Int = 200) throws -> (HTTPURLResponse, Data) {
         let response = try XCTUnwrap(HTTPURLResponse(url: url, statusCode: statusCode, httpVersion: nil, headerFields: ["Content-Type": "application/json"]))
         return (response, Data(body.utf8))
     }

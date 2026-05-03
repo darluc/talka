@@ -8,6 +8,10 @@ protocol RuntimeConfigGenerator {
 
 @MainActor
 final class ServerProcessManager: ObservableObject {
+    enum PortReuseAction: Equatable {
+        case reuseExistingServer(startProxy: Bool)
+    }
+
     @Published var isRunning = false
     @Published var lastError: String?
 
@@ -104,13 +108,22 @@ final class ServerProcessManager: ObservableObject {
             return
         }
 
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              json["service_name"] != nil else {
+        guard let action = Self.portReuseAction(
+            data: data,
+            response: httpResponse,
+            proxyPortInUse: isPortInUse(port: 19095)
+        ) else {
             lastError = "Port \(port) is in use by another application"
             return
         }
 
-        isRunning = true
+        switch action {
+        case .reuseExistingServer(let shouldStartProxy):
+            if shouldStartProxy, !startProxy() {
+                return
+            }
+            isRunning = true
+        }
     }
 
     func terminate() {
@@ -225,5 +238,17 @@ final class ServerProcessManager: ObservableObject {
         }
 
         return result == 0
+    }
+
+    static func portReuseAction(data: Data, response: URLResponse, proxyPortInUse: Bool) -> PortReuseAction? {
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200...299).contains(httpResponse.statusCode),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let serviceName = json["service_name"] as? String,
+              serviceName == "Talka" else {
+            return nil
+        }
+
+        return .reuseExistingServer(startProxy: !proxyPortInUse)
     }
 }

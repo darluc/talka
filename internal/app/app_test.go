@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -329,6 +330,114 @@ func TestIOSSecureResumeUsesFreshSessionID(t *testing.T) {
 	}
 	if resumed.ServerEphemeralPublicKey == paired.ServerEphemeralPublicKey {
 		t.Fatal("resume reused prior server ephemeral public key")
+	}
+}
+
+func TestIOSWebSocketErrorCodePropagatesInjectionFailures(t *testing.T) {
+	err := &inject.InsertError{
+		Code:        inject.FailureCodeAccessibilityMissing,
+		UserMessage: "Talka needs Accessibility or Automation permission before it can paste into other apps.",
+		Recovery: inject.Recovery{
+			Action:     inject.RecoveryActionOpenAccessibilityGuidance,
+			FailedText: "你好，世界",
+			Volatile:   true,
+		},
+		Err: inject.ErrAccessibilityPermissionDenied,
+	}
+
+	got := iosWebSocketErrorCode(err, "process")
+
+	if got.Code != "accessibility_missing" {
+		t.Fatalf("Code = %q, want accessibility_missing", got.Code)
+	}
+	if got.Message != "Talka needs Accessibility or Automation permission before it can paste into other apps." {
+		t.Fatalf("Message = %q, want propagated insert error message", got.Message)
+	}
+}
+
+func TestProcessEncryptedIOSAudioSessionDoesNotWaitForTextInsertion(t *testing.T) {
+	cfg, cfgPath := mustConfig(t)
+	runtime := &asr.FakeRuntime{Ready: true}
+	runtimeServer := httptest.NewServer(runtime.Handler())
+	defer runtimeServer.Close()
+
+	injector := newBlockingTestInjector()
+	defer close(injector.release)
+	service, err := NewWithPipeline(cfg, cfgPath, nil, NewPipeline(
+		asr.NewSidecarProvider(asr.Config{URL: "ws" + strings.TrimPrefix(runtimeServer.URL, "http") + "/ws", Version: protocol.VersionV1Alpha1, Timeout: 2 * time.Second}),
+		llm.NewFakeProvider(llm.FakeConfig{}),
+		injector,
+	))
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
+	}
+	server := httptest.NewServer(service.Handler())
+	defer server.Close()
+
+	startResp := mustPost(t, server.URL+"/v1/pairing/start", nil)
+	var start PairingStartResponse
+	decodeJSON(t, startResp, &start)
+	startResp.Body.Close()
+
+	challengeResp := mustGet(t, server.URL+"/v1/ios/pairing/challenge")
+	var challenge iosPairingChallengeTestResponse
+	decodeJSON(t, challengeResp, &challenge)
+	challengeResp.Body.Close()
+
+	clientIdentity, clientEphemeral := mustClientKeys(t)
+	confirmation := mustAppPairingConfirmation(t, challenge, clientIdentity, clientEphemeral, "iphone-1", "ZVVZ", start.PIN)
+	pairBody := marshalJSONReader(t, iosPairingCompleteTestRequest{PairingID: challenge.PairingID, DeviceID: "iphone-1", DeviceName: "ZVVZ", ClientIdentityPublicKey: base64.StdEncoding.EncodeToString(clientIdentity.Public), ClientEphemeralPublicKey: base64.StdEncoding.EncodeToString(clientEphemeral.Public), ClientConfirmation: base64.StdEncoding.EncodeToString(confirmation)})
+	pairResp := mustPost(t, server.URL+"/v1/ios/pair", pairBody)
+	defer pairResp.Body.Close()
+
+	var paired iosPairingTestResponse
+	decodeJSON(t, pairResp, &paired)
+	clientSession := mustAppClientSession(t, intcrypto.FlowPairing, challenge.PairingID, paired, clientIdentity, clientEphemeral, start.PIN)
+	messages := encryptTestAudioMessages(t, clientSession, paired.SessionID)
+
+	done := make(chan struct{})
+	var result ProcessResult
+	var processErr error
+	go func() {
+		result, processErr = service.ProcessEncryptedIOSAudioSession(context.Background(), "iphone-1", messages)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("ProcessEncryptedIOSAudioSession() blocked on text insertion")
+	}
+
+	if processErr != nil {
+		t.Fatalf("ProcessEncryptedIOSAudioSession() error = %v", processErr)
+	}
+	if got, want := result.FinalText, "你好，世界"; got != want {
+		t.Fatalf("FinalText = %q, want %q", got, want)
+	}
+	if injector.calls() != 0 {
+		t.Fatalf("Insert() calls = %d, want 0 while preparing iOS audio response", injector.calls())
+	}
+}
+
+func TestQueueIOSFinalTextInsertionRunsInjectorInBackground(t *testing.T) {
+	cfg, cfgPath := mustConfig(t)
+	injector := newBlockingTestInjector()
+	defer close(injector.release)
+	service, err := NewWithPipeline(cfg, cfgPath, nil, &Pipeline{injector: injector})
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
+	}
+
+	service.queueIOSFinalTextInsertion("iphone-1", "你好，世界")
+
+	select {
+	case text := <-injector.started:
+		if got, want := text, "你好，世界"; got != want {
+			t.Fatalf("Insert() text = %q, want %q", got, want)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("queueIOSFinalTextInsertion() did not start background insertion")
 	}
 }
 
@@ -659,4 +768,44 @@ type iosPairingTestResponse struct {
 	ServerConfirmation       string `json:"server_confirmation"`
 	SessionID                string `json:"session_id"`
 	AudioWebSocketURL        string `json:"audio_websocket_url"`
+}
+
+type blockingTestInjector struct {
+	started chan string
+	release chan struct{}
+
+	mu    sync.Mutex
+	count int
+}
+
+func newBlockingTestInjector() *blockingTestInjector {
+	injector := &blockingTestInjector{
+		started: make(chan string, 1),
+		release: make(chan struct{}),
+	}
+	return injector
+}
+
+func (i *blockingTestInjector) Insert(ctx context.Context, text string) (inject.Receipt, error) {
+	i.mu.Lock()
+	i.count++
+	i.mu.Unlock()
+
+	select {
+	case i.started <- text:
+	default:
+	}
+
+	select {
+	case <-i.release:
+		return inject.Receipt{Target: "blocking", Status: "inserted"}, nil
+	case <-ctx.Done():
+		return inject.Receipt{}, ctx.Err()
+	}
+}
+
+func (i *blockingTestInjector) calls() int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.count
 }

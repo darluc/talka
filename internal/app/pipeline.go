@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 
 	"talka/internal/asr"
 	"talka/internal/inject"
@@ -49,6 +50,21 @@ func (p *Pipeline) ProcessPCMFile(ctx context.Context, path string) (ProcessResu
 }
 
 func (p *Pipeline) ProcessAudioFrames(ctx context.Context, metadata protocol.AudioMetadata, frames [][]byte) (ProcessResult, error) {
+	result, err := p.PrepareAudioFrames(ctx, metadata, frames)
+	if err != nil {
+		return ProcessResult{}, err
+	}
+
+	receipt, err := p.InsertText(ctx, result.FinalText)
+	if err != nil {
+		return result, err
+	}
+
+	result.Receipt = receipt
+	return result, nil
+}
+
+func (p *Pipeline) PrepareAudioFrames(ctx context.Context, metadata protocol.AudioMetadata, frames [][]byte) (ProcessResult, error) {
 	transcript, err := p.asr.Transcribe(ctx, asr.Request{Metadata: metadata, Frames: frames})
 	if err != nil {
 		return ProcessResult{}, err
@@ -59,19 +75,16 @@ func (p *Pipeline) ProcessAudioFrames(ctx context.Context, metadata protocol.Aud
 		return ProcessResult{}, err
 	}
 
-	receipt, err := p.injector.Insert(ctx, cleanup.Text)
-	if err != nil {
-		return ProcessResult{
-			RawTranscript: transcript.Transcript,
-			FinalText:     cleanup.Text,
-			Cleanup:       cleanup,
-		}, err
-	}
-
 	return ProcessResult{
 		RawTranscript: transcript.Transcript,
 		FinalText:     cleanup.Text,
 		Cleanup:       cleanup,
-		Receipt:       receipt,
 	}, nil
+}
+
+func (p *Pipeline) InsertText(ctx context.Context, text string) (inject.Receipt, error) {
+	if p.injector == nil {
+		return inject.Receipt{}, fmt.Errorf("text injector is not configured")
+	}
+	return p.injector.Insert(ctx, text)
 }

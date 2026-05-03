@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"talka/internal/inject"
 	"talka/internal/protocol"
 	"talka/internal/session"
 )
@@ -24,6 +25,7 @@ const iosWebSocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 const (
 	iosWebSocketMaxBufferedMessages = 10000
 	iosWebSocketSessionTimeout      = 5 * time.Minute
+	iosInsertTimeout                = 10 * time.Second
 )
 
 type iosAudioWebSocketResponse struct {
@@ -110,9 +112,44 @@ func (a *App) handleIOSAudioStream(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.logger.Info("iOS audio session processed", "device_id", deviceID, "buffered_messages", len(messages), "raw_transcript_chars", len(result.RawTranscript), "final_text_chars", len(result.FinalText))
-		_ = writeIOSWebSocketJSON(conn, iosAudioWebSocketResponse{OK: true, FinalText: result.FinalText})
+		a.queueIOSFinalTextInsertion(deviceID, result.FinalText)
+		if err := writeIOSWebSocketJSON(conn, iosAudioWebSocketResponse{OK: true, FinalText: result.FinalText}); err != nil {
+			a.logger.Error("iOS audio websocket response write failed", "device_id", deviceID, "error", err)
+		}
 		return
 	}
+}
+
+func (a *App) queueIOSFinalTextInsertion(deviceID, finalText string) {
+	if strings.TrimSpace(finalText) == "" {
+		return
+	}
+
+	a.mu.RLock()
+	pipeline := a.pipeline
+	a.mu.RUnlock()
+	if pipeline == nil {
+		a.logger.Error("iOS final text insertion skipped because pipeline is unavailable", "device_id", deviceID)
+		return
+	}
+
+	go func(text string, pipeline *Pipeline) {
+		ctx, cancel := context.WithTimeout(context.Background(), iosInsertTimeout)
+		defer cancel()
+
+		receipt, err := pipeline.InsertText(ctx, text)
+		if err != nil {
+			var insertErr *inject.InsertError
+			if errors.As(err, &insertErr) {
+				a.logger.Error("iOS final text insertion failed", "device_id", deviceID, "code", insertErr.Code, "message", insertErr.UserMessage, "error", insertErr.Err)
+				return
+			}
+			a.logger.Error("iOS final text insertion failed", "device_id", deviceID, "error", err)
+			return
+		}
+
+		a.logger.Info("iOS final text inserted", "device_id", deviceID, "target", receipt.Target, "status", receipt.Status, "restore_status", receipt.RestoreStatus)
+	}(finalText, pipeline)
 }
 
 func shouldLogIOSAudioMessage(message session.EncryptedMessage, bufferedMessages int) bool {
@@ -127,6 +164,13 @@ func iosWebSocketCanBuffer(messageCount int) bool {
 }
 
 func iosWebSocketErrorCode(err error, phase string) iosAudioWebSocketError {
+	var insertErr *inject.InsertError
+	if errors.As(err, &insertErr) {
+		return iosAudioWebSocketError{
+			Code:    string(insertErr.Code),
+			Message: insertErr.UserMessage,
+		}
+	}
 	if errors.Is(err, session.ErrReplay) {
 		return iosAudioWebSocketError{Code: "replayed_sequence", Message: "audio session message was already processed"}
 	}

@@ -12,6 +12,7 @@ final class ServerProcessManager: ObservableObject {
     @Published var lastError: String?
 
     private var process: Process?
+    private var proxyProcess: Process?
     private let configGenerator: RuntimeConfigGenerator
     private let port: Int
     private var restartCount = 0
@@ -34,6 +35,9 @@ final class ServerProcessManager: ObservableObject {
             return
         }
 
+        // 1. Start the ASR proxy first (sidecar mode requires it)
+        guard startProxy() else { return }
+
         let configURL: URL
         do {
             configURL = try configGenerator.generateConfig()
@@ -49,6 +53,39 @@ final class ServerProcessManager: ObservableObject {
 
         restartCount = 0
         launch(executableURL: serverURL, configPath: configURL.path)
+    }
+
+    private func startProxy() -> Bool {
+        guard !isPortInUse(port: 19095) else { return true }
+
+        guard let proxyURL = locateProxy() else {
+            lastError = "ASR proxy executable not found in app bundle"
+            return false
+        }
+
+        let process = Process()
+        process.executableURL = proxyURL
+        process.arguments = ["serve", "--addr", "127.0.0.1:19095", "--upstream-url", "ws://127.0.0.1:10095", "--mode", "2pass"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            proxyProcess = process
+            return true
+        } catch {
+            lastError = "Failed to launch ASR proxy: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private func locateProxy() -> URL? {
+        let bundleResources = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Resources/talka-asr-runtime")
+        if FileManager.default.isExecutableFile(atPath: bundleResources.path) {
+            return bundleResources
+        }
+        return nil
     }
 
     private func checkPortReuse() async {
@@ -82,22 +119,24 @@ final class ServerProcessManager: ObservableObject {
         restartTask = nil
         restartCount = 0
 
-        guard let process, process.isRunning else {
-            process = nil
-            isRunning = false
-            isTerminating = false
-            return
+        if let process, process.isRunning {
+            process.terminate()
+        }
+        if let proxyProcess, proxyProcess.isRunning {
+            proxyProcess.terminate()
         }
 
-        process.terminate()
-
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-            guard let self, let process = self.process, process.isRunning else {
-                self?.isTerminating = false
-                return
+            if let self, let process = self.process, process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
             }
-            kill(process.processIdentifier, SIGKILL)
-            self.isTerminating = false
+            if let self, let proxy = self.proxyProcess, proxy.isRunning {
+                kill(proxy.processIdentifier, SIGKILL)
+            }
+            self?.process = nil
+            self?.proxyProcess = nil
+            self?.isRunning = false
+            self?.isTerminating = false
         }
     }
 

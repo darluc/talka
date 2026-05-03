@@ -85,6 +85,9 @@ func (a *App) handleIOSAudioStream(w http.ResponseWriter, r *http.Request) {
 			_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "decode"))
 			return
 		}
+		if message.Type == protocol.MessageTypeAudioStart || message.Type == protocol.MessageTypeAudioStop {
+			a.logger.Info("iOS audio websocket control message", "device_id", deviceID, "type", message.Type, "seq", message.Seq)
+		}
 		if !iosWebSocketCanBuffer(len(messages) + 1) {
 			a.logger.Error("iOS audio websocket message limit exceeded", "device_id", deviceID, "buffered_messages", len(messages), "limit", iosWebSocketMaxBufferedMessages)
 			_ = writeIOSWebSocketError(conn, iosAudioWebSocketError{Code: "message_limit_exceeded", Message: "audio session message limit exceeded"})

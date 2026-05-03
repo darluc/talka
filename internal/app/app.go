@@ -206,7 +206,7 @@ func NewWithPipeline(cfg config.Config, configPath string, logger *slog.Logger, 
 		pipeline:    pipeline,
 		iosSessions: map[string]*iosAudioSession{},
 	}
-	app.iosManager = pairing.NewManager(pairing.Config{ServerDeviceID: "talka-mac", ServerDeviceName: cfg.Server.ServiceName, Store: newIOSPairingStore(), PairingTTL: pairingLifetime, InactivityTimeout: 30 * time.Second})
+	app.iosManager = pairing.NewManager(pairing.Config{ServerDeviceID: "talka-mac", ServerDeviceName: cfg.Server.ServiceName, Store: newIOSPairingStore(), PairingTTL: pairingLifetime, InactivityTimeout: 10 * time.Minute})
 	app.logger.Info("app started",
 		"service_name", cfg.Server.ServiceName,
 		"bind_host", cfg.Server.BindHost,

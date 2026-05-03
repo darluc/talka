@@ -187,10 +187,10 @@ func decryptIOSAudioMessages(machine *session.StateMachine, messages []session.E
 	started := false
 	stopped := false
 
-	for _, message := range messages {
+	for index, message := range messages {
 		plaintext, err := machine.Decrypt(message)
 		if err != nil {
-			return protocol.AudioMetadata{}, nil, err
+			return protocol.AudioMetadata{}, nil, fmt.Errorf("decrypt message %d (seq=%d, type=%s): %w", index, message.Seq, message.Type, err)
 		}
 		decoded, err := protocol.Decode(plaintext)
 		if err != nil {

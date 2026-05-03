@@ -70,7 +70,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "cd ${PROJECT_DIR}/../.. && ./scripts/build-go-binaries.sh --output-dir \"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\" --for-bundle";
+			shellScript = "cd ${PROJECT_DIR}/../../.. && ./scripts/build-go-binaries.sh --output-dir \"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\" --for-bundle";
 		};
 /* End PBXShellScriptBuildPhase section */
 

@@ -884,15 +884,25 @@ final class AppShellViewModel: ObservableObject {
 
 @main
 struct TalkaMacApp: App {
-    @StateObject private var viewModel = AppShellViewModel(client: LiveControlAPIClient())
-    @StateObject private var serverManager = ServerProcessManager(configGenerator: SidecarRuntimeConfigGenerator())
+    @StateObject private var viewModel: AppShellViewModel
+    @StateObject private var serverManager: ServerProcessManager
+
+    init() {
+        let sm = ServerProcessManager(configGenerator: SidecarRuntimeConfigGenerator())
+        let vm = AppShellViewModel(client: LiveControlAPIClient())
+        _serverManager = StateObject(wrappedValue: sm)
+        _viewModel = StateObject(wrappedValue: vm)
+
+        Task {
+            await sm.start()
+        }
+    }
 
     var body: some Scene {
         MenuBarExtra(viewModel.menuBarTitle, systemImage: viewModel.serviceDisplayState.symbolName) {
             MenuBarContentView(viewModel: viewModel, serverManager: serverManager)
                 .frame(minWidth: ShellMetrics.minUtilityWidth)
                 .task {
-                    await serverManager.start()
                     await viewModel.refreshIfNeeded()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in

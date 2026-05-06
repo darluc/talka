@@ -117,28 +117,64 @@ func (cfg Config) Validate(baseDir string) error {
 	if cfg.ASR.SampleRate != 16000 {
 		appendIssue("asr.sample_rate", fmt.Sprintf("%d", cfg.ASR.SampleRate), "must be 16000 for the local ASR contract")
 	}
+	if cfg.ASR.StartupTimeout <= 0 {
+		appendIssue("asr.startup_timeout_seconds", fmt.Sprintf("%d", cfg.ASR.StartupTimeout), "must be greater than zero")
+	}
 
-	// runtime_path and model paths are only required for funasr_onnx provider.
-	// Sidecar provider connects to an external ASR runtime and needs neither.
-	if asrProvider == "funasr_onnx" || asrProvider == "" {
+	validateNonEmpty := func(field, value string) {
+		if strings.TrimSpace(value) == "" {
+			appendIssue(field, value, "must not be empty")
+		}
+	}
+	validatePath := func(field, value string) {
+		if strings.TrimSpace(value) == "" {
+			appendIssue(field, value, "must not be empty")
+			return
+		}
+		if err := mustExist(baseDir, value); err != nil {
+			appendIssue(field, value, err.Error())
+		}
+	}
+
+	switch asrProvider {
+	case "funasr_embedded", "funasr_onnx", "":
 		if strings.TrimSpace(cfg.ASR.RuntimePath) == "" {
 			appendIssue("asr.runtime_path", cfg.ASR.RuntimePath, "must not be empty")
 		} else if err := mustExist(baseDir, cfg.ASR.RuntimePath); err != nil {
 			appendIssue("asr.runtime_path", cfg.ASR.RuntimePath, err.Error())
 		}
-		validatePath := func(field, value string) {
-			if strings.TrimSpace(value) == "" {
-				appendIssue(field, value, "must not be empty")
-				return
-			}
-			if err := mustExist(baseDir, value); err != nil {
-				appendIssue(field, value, err.Error())
-			}
-		}
 		validatePath("asr.models.asr", cfg.ASR.Models.ASR)
+		validatePath("asr.models.online", cfg.ASR.Models.Online)
 		validatePath("asr.models.vad", cfg.ASR.Models.VAD)
 		validatePath("asr.models.punc", cfg.ASR.Models.Punc)
 		validatePath("asr.models.itn", cfg.ASR.Models.ITN)
+		if strings.TrimSpace(cfg.ASR.Models.LM) != "" {
+			validatePath("asr.models.lm", cfg.ASR.Models.LM)
+		}
+		if strings.TrimSpace(cfg.ASR.HotwordPath) != "" {
+			validatePath("asr.hotword_path", cfg.ASR.HotwordPath)
+		}
+	case "funasr_external":
+		// External upstream runtimes own their model and binary lifecycle.
+	case "funasr_container":
+		validateNonEmpty("asr.container_image", cfg.ASR.ContainerImage)
+		validateNonEmpty("asr.container_name", cfg.ASR.ContainerName)
+		validateNonEmpty("asr.download_dir", cfg.ASR.DownloadDir)
+		validateNonEmpty("asr.models.asr", cfg.ASR.Models.ASR)
+		validateNonEmpty("asr.models.online", cfg.ASR.Models.Online)
+		validateNonEmpty("asr.models.vad", cfg.ASR.Models.VAD)
+		validateNonEmpty("asr.models.punc", cfg.ASR.Models.Punc)
+		validateNonEmpty("asr.models.itn", cfg.ASR.Models.ITN)
+		if strings.TrimSpace(cfg.ASR.Models.LM) != "" {
+			validateNonEmpty("asr.models.lm", cfg.ASR.Models.LM)
+		}
+		if strings.TrimSpace(cfg.ASR.HotwordPath) != "" {
+			validateNonEmpty("asr.hotword_path", cfg.ASR.HotwordPath)
+		}
+	case "sidecar":
+		// Legacy Talka proxy sidecar only needs host/port validation above.
+	default:
+		appendIssue("asr.provider", cfg.ASR.Provider, "must be one of funasr_embedded, funasr_external, funasr_container, sidecar")
 	}
 
 	if strings.TrimSpace(cfg.LLM.Provider) == "" {

@@ -91,6 +91,44 @@ func TestManagedProviderReturnsTypedRuntimeUnavailableAndRestarts(t *testing.T) 
 	}
 }
 
+func TestUpstreamRuntimeManagerFallsBackToFreePortWhenPreferredPortIsBusy(t *testing.T) {
+	exe := mustExecutable(t)
+	models := mustModelPaths(t)
+	preferredPort := mustFreePort(t)
+	occupied, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", preferredPort))
+	if err != nil {
+		t.Fatalf("Listen(preferred port) error = %v", err)
+	}
+	defer occupied.Close()
+
+	manager := NewUpstreamRuntimeManager(UpstreamRuntimeManagerConfig{
+		RuntimePath: exe,
+		RuntimeArgs: []string{
+			"-test.run=TestRuntimeManagerHelperProcess",
+			"--",
+			"--listen-ip", "127.0.0.1",
+			"--port", fmt.Sprintf("%d", preferredPort),
+		},
+		Host:           "127.0.0.1",
+		Port:           preferredPort,
+		Models:         models,
+		StartupTimeout: 2 * time.Second,
+		StopTimeout:    time.Second,
+		Env:            []string{"TALKA_RUNTIME_HELPER_PROCESS=1"},
+	})
+	t.Cleanup(func() {
+		_ = manager.Stop(context.Background())
+	})
+
+	if err := manager.EnsureRunning(context.Background()); err != nil {
+		t.Fatalf("EnsureRunning() error = %v", err)
+	}
+
+	if got := manager.URL(); got == fmt.Sprintf("ws://127.0.0.1:%d", preferredPort) {
+		t.Fatalf("URL() = %q, want fallback port different from busy preferred port", got)
+	}
+}
+
 func TestRuntimeManagerHelperProcess(t *testing.T) {
 	if os.Getenv("TALKA_RUNTIME_HELPER_PROCESS") != "1" {
 		return
@@ -98,11 +136,24 @@ func TestRuntimeManagerHelperProcess(t *testing.T) {
 
 	fs := flag.NewFlagSet("runtime-helper", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:19095", "listen address")
+	listenIP := fs.String("listen-ip", "", "listen ip")
+	port := fs.Int("port", 0, "listen port")
 	marker := fs.String("marker", "", "crash marker")
 	_ = fs.Parse(os.Args[3:])
+	if *listenIP != "" && *port > 0 {
+		*addr = net.JoinHostPort(*listenIP, fmt.Sprintf("%d", *port))
+	}
 
 	var handler http.Handler
-	if *marker != "" && !pathExists(*marker) {
+	if *listenIP != "" && *port > 0 {
+		handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			conn, err := acceptWebSocket(w, req)
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		})
+	} else if *marker != "" && !pathExists(*marker) {
 		if err := os.WriteFile(*marker, []byte("crashed"), 0o644); err != nil {
 			panic(err)
 		}
@@ -163,12 +214,13 @@ func mustModelPaths(t *testing.T) ModelPaths {
 	t.Helper()
 	root := t.TempDir()
 	paths := ModelPaths{
-		ASR:  filepath.Join(root, "asr"),
-		VAD:  filepath.Join(root, "vad"),
-		Punc: filepath.Join(root, "punc"),
-		ITN:  filepath.Join(root, "itn"),
+		ASR:    filepath.Join(root, "asr"),
+		Online: filepath.Join(root, "online"),
+		VAD:    filepath.Join(root, "vad"),
+		Punc:   filepath.Join(root, "punc"),
+		ITN:    filepath.Join(root, "itn"),
 	}
-	for _, path := range []string{paths.ASR, paths.VAD, paths.Punc, paths.ITN} {
+	for _, path := range []string{paths.ASR, paths.Online, paths.VAD, paths.Punc, paths.ITN} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatalf("MkdirAll(%q) error = %v", path, err)
 		}

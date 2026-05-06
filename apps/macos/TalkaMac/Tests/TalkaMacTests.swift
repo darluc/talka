@@ -6,6 +6,8 @@ import XCTest
 final class TalkaMacTests: XCTestCase {
     override func tearDown() {
         StubURLProtocol.reset()
+        unsetenv("TALKA_CONFIG_PATH")
+        unsetenv("TALKA_RESOURCES_PATH")
         super.tearDown()
     }
 
@@ -229,17 +231,24 @@ final class TalkaMacTests: XCTestCase {
               "service_name": "Talka"
             },
             "asr": {
-              "provider": "funasr_onnx",
-              "runtime_path": "/Applications/Talka.app/Contents/Resources/talka-asr-runtime",
+              "provider": "funasr_embedded",
+              "runtime_path": "talka-asr-runtime",
               "host": "127.0.0.1",
               "port": 10095,
-              "mode": "twopass",
+              "mode": "2pass",
               "sample_rate": 16000,
+              "startup_timeout_seconds": 30,
+              "container_image": "",
+              "container_name": "",
+              "download_dir": "",
+              "hotword_path": "",
               "models": {
-                "asr": "models/asr",
-                "vad": "models/vad",
-                "punc": "models/punc",
-                "itn": "models/itn"
+                "asr": "models/funasr/paraformer-zh-onnx",
+                "online": "models/funasr/paraformer-zh-online-onnx",
+                "vad": "models/funasr/fsmn-vad-onnx",
+                "punc": "models/funasr/ct-punc-onnx",
+                "itn": "models/funasr/itn-zh",
+                "lm": ""
               }
             },
             "llm": {
@@ -284,17 +293,24 @@ final class TalkaMacTests: XCTestCase {
               "service_name": "Talka"
             },
             "asr": {
-              "provider": "funasr_onnx",
-              "runtime_path": "/Applications/Talka.app/Contents/Resources/talka-asr-runtime",
+              "provider": "funasr_embedded",
+              "runtime_path": "talka-asr-runtime",
               "host": "127.0.0.1",
               "port": 10095,
-              "mode": "twopass",
+              "mode": "2pass",
               "sample_rate": 16000,
+              "startup_timeout_seconds": 30,
+              "container_image": "",
+              "container_name": "",
+              "download_dir": "",
+              "hotword_path": "",
               "models": {
-                "asr": "models/asr",
-                "vad": "models/vad",
-                "punc": "models/punc",
-                "itn": "models/itn"
+                "asr": "models/funasr/paraformer-zh-onnx",
+                "online": "models/funasr/paraformer-zh-online-onnx",
+                "vad": "models/funasr/fsmn-vad-onnx",
+                "punc": "models/funasr/ct-punc-onnx",
+                "itn": "models/funasr/itn-zh",
+                "lm": ""
               }
             },
             "llm": {
@@ -337,10 +353,18 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertEqual(server["service_name"] as? String, expected.server.serviceName)
         XCTAssertNil(server["bindHost"])
         XCTAssertNil(server["serviceName"])
-        XCTAssertEqual(asr["runtime_path"] as? String, expected.asr.runtimePath)
+        XCTAssertEqual(asr["container_image"] as? String, expected.asr.containerImage)
+        XCTAssertEqual(asr["container_name"] as? String, expected.asr.containerName)
+        XCTAssertEqual(asr["download_dir"] as? String, expected.asr.downloadDir)
+        XCTAssertEqual(asr["hotword_path"] as? String, expected.asr.hotwordPath)
         XCTAssertEqual(asr["sample_rate"] as? Int, expected.asr.sampleRate)
-        XCTAssertNil(asr["runtimePath"])
+        XCTAssertEqual(asr["startup_timeout_seconds"] as? Int, expected.asr.startupTimeoutSeconds)
+        XCTAssertNil(asr["containerImage"])
+        XCTAssertNil(asr["containerName"])
+        XCTAssertNil(asr["downloadDir"])
+        XCTAssertNil(asr["hotwordPath"])
         XCTAssertNil(asr["sampleRate"])
+        XCTAssertNil(asr["startupTimeoutSeconds"])
         XCTAssertEqual(llm["base_url"] as? String, expected.llm.baseURL)
         XCTAssertEqual(llm["timeout_seconds"] as? Int, expected.llm.timeoutSeconds)
         XCTAssertNil(llm["baseURL"])
@@ -362,12 +386,11 @@ final class TalkaMacTests: XCTestCase {
         let action = try XCTUnwrap(
             ServerProcessManager.portReuseAction(
                 data: response.1,
-                response: response.0,
-                proxyPortInUse: false
+                response: response.0
             )
         )
 
-        XCTAssertEqual(action, .reuseExistingServer(startProxy: true))
+        XCTAssertEqual(action, .reuseExistingServer)
     }
 
     func testPortReuseActionSkipsProxyWhenExistingTalkaServerAlreadyHasProxy() throws {
@@ -379,12 +402,11 @@ final class TalkaMacTests: XCTestCase {
         let action = try XCTUnwrap(
             ServerProcessManager.portReuseAction(
                 data: response.1,
-                response: response.0,
-                proxyPortInUse: true
+                response: response.0
             )
         )
 
-        XCTAssertEqual(action, .reuseExistingServer(startProxy: false))
+        XCTAssertEqual(action, .reuseExistingServer)
     }
 
     func testPortReuseActionRejectsNonTalkaServer() throws {
@@ -396,10 +418,69 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertNil(
             ServerProcessManager.portReuseAction(
                 data: response.1,
-                response: response.0,
-                proxyPortInUse: false
+                response: response.0
             )
         )
+    }
+
+    func testRuntimeConfigGeneratorPreservesExistingConfig() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let resourcesDir = tempDir.appendingPathComponent("resources", isDirectory: true)
+        let configURL = tempDir.appendingPathComponent("config.yaml")
+        try FileManager.default.createDirectory(at: resourcesDir, withIntermediateDirectories: true)
+        setenv("TALKA_CONFIG_PATH", configURL.path, 1)
+        setenv("TALKA_RESOURCES_PATH", resourcesDir.path, 1)
+
+        let generator = EmbeddedRuntimeConfigGenerator()
+        let firstURL = try generator.generateConfig()
+        XCTAssertEqual(firstURL, configURL)
+
+        let externalConfig = """
+        server:
+          bind_host: 0.0.0.0
+          port: 8080
+          service_name: Talka
+
+        asr:
+          provider: funasr_external
+          runtime_path: ""
+          host: 127.0.0.1
+          port: 10095
+          mode: 2pass
+          sample_rate: 16000
+          startup_timeout_seconds: 30
+          container_image: ""
+          container_name: ""
+          download_dir: ""
+          hotword_path: ""
+          models:
+            asr: ""
+            online: ""
+            vad: ""
+            punc: ""
+            itn: ""
+            lm: ""
+
+        llm:
+          provider: ollama
+          base_url: http://localhost:11434
+          model: qwen3:8b
+          timeout_seconds: 30
+
+        injection:
+          mode: clipboard_paste
+          restore_clipboard: true
+
+        logging:
+          level: info
+        """
+        try externalConfig.write(to: configURL, atomically: true, encoding: .utf8)
+
+        let secondURL = try generator.generateConfig()
+        XCTAssertEqual(secondURL, configURL)
+        let contents = try String(contentsOf: configURL, encoding: .utf8)
+        XCTAssertTrue(contents.contains("provider: funasr_external"))
+        XCTAssertFalse(contents.contains("provider: funasr_embedded"))
     }
 
     private func makeLiveClient(handler: @escaping @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)) -> LiveControlAPIClient {
@@ -599,13 +680,25 @@ private extension ControlConfig {
             path: "/tmp/talka.yaml",
             server: ControlServerConfig(bindHost: "127.0.0.1", port: 8080, serviceName: "Talka"),
             asr: ControlASRConfig(
-                provider: "funasr_onnx",
-                runtimePath: "/Applications/Talka.app/Contents/Resources/talka-asr-runtime",
+                provider: "funasr_embedded",
+                runtimePath: "talka-asr-runtime",
                 host: "127.0.0.1",
                 port: 10095,
-                mode: "twopass",
+                mode: "2pass",
                 sampleRate: 16_000,
-                models: ControlASRModelsConfig(asr: "models/asr", vad: "models/vad", punc: "models/punc", itn: "models/itn")
+                startupTimeoutSeconds: 30,
+                containerImage: "",
+                containerName: "",
+                downloadDir: "",
+                hotwordPath: "",
+                models: ControlASRModelsConfig(
+                    asr: "models/funasr/paraformer-zh-onnx",
+                    online: "models/funasr/paraformer-zh-online-onnx",
+                    vad: "models/funasr/fsmn-vad-onnx",
+                    punc: "models/funasr/ct-punc-onnx",
+                    itn: "models/funasr/itn-zh",
+                    lm: ""
+                )
             ),
             llm: ControlLLMConfig(provider: "ollama", baseURL: "http://localhost:11434", model: "qwen3:8b", timeoutSeconds: 30),
             injection: ControlInjectionConfig(mode: "clipboard_paste", restoreClipboard: true),

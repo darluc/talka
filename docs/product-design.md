@@ -4,17 +4,17 @@
 
 Talka is a local-first voice input toolchain. An iOS app captures speech and streams audio to a macOS service on the same local network. The macOS service transcribes speech locally, refines the resulting text with a local LLM, and inserts the final text into the currently focused macOS input field.
 
-The product is designed for fast personal dictation, short-form writing, chat replies, notes, and coding-adjacent text entry. Privacy and local control are core requirements: audio stays inside the user's local network, ASR runs locally through FunASR C++/ONNX Runtime, and text post-processing defaults to the user's local Ollama service.
+The product is designed for fast personal dictation, short-form writing, chat replies, notes, and coding-adjacent text entry. Privacy and local control are core requirements: audio stays inside the user's local network, ASR runs locally through an embedded FunASR C++/ONNX Runtime by default, and text post-processing defaults to the user's local Ollama service. Advanced users can switch the ASR backend to an external FunASR runtime or a legacy Talka sidecar when needed.
 
 ## Goals
 
 - Provide a simple iOS voice capture interface with clear recording feedback.
 - Pair iOS and macOS devices securely with a one-time PIN.
 - Stream audio from iOS to macOS over the local network.
-- Run local Chinese-first ASR using FunASR C++/ONNX Runtime.
+- Run local Chinese-first ASR using an embedded FunASR C++/ONNX Runtime by default.
 - Use Ollama for punctuation, sentence cleanup, style-preserving correction, and final text polishing.
 - Insert generated text into the active macOS application with minimal user friction.
-- Keep the system extensible so ASR, LLM, transport, and text-injection methods can evolve independently.
+- Keep the system extensible so embedded ASR, external ASR, LLM, transport, and text-injection methods can evolve independently.
 
 ## Non-Goals For The First Version
 
@@ -35,7 +35,7 @@ The product is designed for fast personal dictation, short-form writing, chat re
 5. The devices establish an encrypted session and remember the pairing.
 6. The user taps or holds the microphone button on iOS.
 7. iOS streams microphone audio to the macOS service.
-8. macOS sends the audio to the local FunASR runtime.
+8. macOS sends the audio to the selected ASR backend, using the embedded FunASR runtime by default.
 9. ASR results are accumulated as partial and final segments.
 10. When recording ends, macOS sends the recognized text to Ollama for final cleanup.
 11. The final text is inserted into the currently focused macOS input field.
@@ -81,6 +81,7 @@ Primary UI:
 
 Configuration:
 
+- ASR provider selection: embedded runtime, external FunASR runtime, or legacy Talka sidecar.
 - ASR runtime path.
 - ASR model paths.
 - Ollama base URL.
@@ -164,14 +165,15 @@ Talka is local-first.
 
 - iOS sends audio only to paired Macs.
 - macOS accepts audio only from paired devices after encrypted session setup.
-- ASR runs locally through FunASR runtime.
+- ASR runs locally through the app-bundled FunASR runtime by default.
+- Advanced deployments can point at a separately managed local FunASR runtime without changing the iOS client flow.
 - LLM post-processing defaults to local Ollama.
 - No telemetry is required for MVP.
 - Debug logs must not store raw audio or full transcripts unless the user explicitly enables diagnostic capture.
 
 ## Key Product Risks
 
-- ASR runtime packaging on macOS may be the hardest engineering part.
+- Embedded ASR runtime packaging on macOS may be the hardest engineering part.
 - macOS Accessibility permission may confuse users unless onboarding is clear.
 - Local network permission on iOS must be requested at the right moment.
 - Real-time ASR quality depends on chunking and VAD behavior.
@@ -183,9 +185,9 @@ Talka is local-first.
 - iOS can discover and pair with macOS on the same network.
 - PIN pairing blocks unauthorized devices.
 - Audio can stream from iOS to macOS.
-- FunASR runtime can produce Chinese transcription from live speech.
+- The embedded FunASR runtime can produce Chinese transcription from live speech.
+- The macOS app can also be reconfigured to use an external FunASR runtime or legacy sidecar without changing the pairing flow.
 - Ollama can clean the recognized text.
 - macOS can paste the final text into common apps such as Notes, Safari text fields, WeChat, and VS Code.
 - The user can configure Ollama URL and model.
 - The system can restart and reconnect to a previously paired device.
-

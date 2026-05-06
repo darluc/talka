@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -36,22 +35,62 @@ func newASRProviderFromConfig(cfg config.ASRConfig, configDir string) (ASRProvid
 	if provider == "sidecar" {
 		return asr.NewSidecarProvider(asr.Config{URL: asrWebsocketURL(cfg.Host, cfg.Port), Version: protocol.VersionV1Alpha1}), nil
 	}
-	if provider != "funasr_onnx" {
+	if provider == "funasr_external" {
+		return asr.NewUpstreamProvider(nil, asr.UpstreamProviderConfig{
+			URL:     fmt.Sprintf("ws://%s:%d", cfg.Host, cfg.Port),
+			Mode:    cfg.Mode,
+			Timeout: 5 * time.Second,
+		}), nil
+	}
+	if provider == "funasr_container" {
+		manager := asr.NewDockerRuntimeManager(asr.DockerRuntimeManagerConfig{
+			Host:          cfg.Host,
+			Port:          cfg.Port,
+			Mode:          cfg.Mode,
+			Image:         cfg.ContainerImage,
+			ContainerName: cfg.ContainerName,
+			DownloadDir:   resolveConfigPath(configDir, cfg.DownloadDir),
+			HotwordPath:   resolveOptionalConfigPath(configDir, cfg.HotwordPath),
+			Models: asr.ModelPaths{
+				ASR:    cfg.Models.ASR,
+				Online: cfg.Models.Online,
+				VAD:    cfg.Models.VAD,
+				Punc:   cfg.Models.Punc,
+				ITN:    cfg.Models.ITN,
+				LM:     cfg.Models.LM,
+			},
+			StartupTimeout: time.Duration(cfg.StartupTimeout) * time.Second,
+		})
+		return asr.NewUpstreamProvider(manager, asr.UpstreamProviderConfig{
+			URL:     fmt.Sprintf("ws://%s:%d", cfg.Host, cfg.Port),
+			Mode:    cfg.Mode,
+			Timeout: 5 * time.Second,
+		}), nil
+	}
+	if provider != "funasr_onnx" && provider != "funasr_embedded" {
 		return nil, fmt.Errorf("unsupported asr.provider %q", cfg.Provider)
 	}
-	manager := asr.NewRuntimeManager(asr.RuntimeManagerConfig{
+	manager := asr.NewUpstreamRuntimeManager(asr.UpstreamRuntimeManagerConfig{
 		RuntimePath: resolveConfigPath(configDir, cfg.RuntimePath),
 		RuntimeArgs: asrRuntimeArgsFromConfig(cfg),
 		Host:        cfg.Host,
 		Port:        cfg.Port,
+		HotwordPath: resolveOptionalConfigPath(configDir, cfg.HotwordPath),
 		Models: asr.ModelPaths{
-			ASR:  resolveConfigPath(configDir, cfg.Models.ASR),
-			VAD:  resolveConfigPath(configDir, cfg.Models.VAD),
-			Punc: resolveConfigPath(configDir, cfg.Models.Punc),
-			ITN:  resolveConfigPath(configDir, cfg.Models.ITN),
+			ASR:    resolveConfigPath(configDir, cfg.Models.ASR),
+			Online: resolveConfigPath(configDir, cfg.Models.Online),
+			VAD:    resolveConfigPath(configDir, cfg.Models.VAD),
+			Punc:   resolveConfigPath(configDir, cfg.Models.Punc),
+			ITN:    resolveConfigPath(configDir, cfg.Models.ITN),
+			LM:     resolveOptionalConfigPath(configDir, cfg.Models.LM),
 		},
+		StartupTimeout: time.Duration(cfg.StartupTimeout) * time.Second,
 	})
-	return asr.NewManagedProvider(manager, asr.Config{Version: protocol.VersionV1Alpha1}), nil
+	return asr.NewUpstreamProvider(manager, asr.UpstreamProviderConfig{
+		URL:     fmt.Sprintf("ws://%s:%d", cfg.Host, cfg.Port),
+		Mode:    cfg.Mode,
+		Timeout: 5 * time.Second,
+	}), nil
 }
 
 func asrWebsocketURL(host string, port int) string {
@@ -59,7 +98,23 @@ func asrWebsocketURL(host string, port int) string {
 }
 
 func asrRuntimeArgsFromConfig(cfg config.ASRConfig) []string {
-	return []string{"serve", "--addr", net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)), "--mode", cfg.Mode}
+	lmDir := strings.TrimSpace(cfg.Models.LM)
+	if lmDir == "" {
+		lmDir = "none"
+	}
+	hotwordPath := cfg.HotwordPath
+	return []string{
+		"--listen-ip", cfg.Host,
+		"--port", strconv.Itoa(cfg.Port),
+		"--model-dir", cfg.Models.ASR,
+		"--online-model-dir", cfg.Models.Online,
+		"--vad-dir", cfg.Models.VAD,
+		"--punc-dir", cfg.Models.Punc,
+		"--itn-dir", cfg.Models.ITN,
+		"--lm-dir", lmDir,
+		"--hotword", hotwordPath,
+		"--certfile", "0",
+	}
 }
 
 func newLLMProviderFromConfig(cfg config.LLMConfig) (LLMProvider, error) {
@@ -83,4 +138,11 @@ func resolveConfigPath(configDir, value string) string {
 		return value
 	}
 	return filepath.Join(configDir, value)
+}
+
+func resolveOptionalConfigPath(configDir, value string) string {
+	if strings.TrimSpace(value) == "" {
+		return ""
+	}
+	return resolveConfigPath(configDir, value)
 }

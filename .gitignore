@@ -24,6 +24,9 @@ models/funasr/*
 !models/funasr/paraformer-zh-onnx/
 models/funasr/paraformer-zh-onnx/*
 !models/funasr/paraformer-zh-onnx/.gitkeep
+!models/funasr/paraformer-zh-online-onnx/
+models/funasr/paraformer-zh-online-onnx/*
+!models/funasr/paraformer-zh-online-onnx/.gitkeep
 !models/funasr/fsmn-vad-onnx/
 models/funasr/fsmn-vad-onnx/*
 !models/funasr/fsmn-vad-onnx/.gitkeep

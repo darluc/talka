@@ -1,0 +1,169 @@
+package app
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"talka/internal/asr"
+	"talka/internal/config"
+)
+
+func TestNewASRProviderFromConfigBuildsEmbeddedFunASRProvider(t *testing.T) {
+	root := t.TempDir()
+	runtimePath := mustExecutablePath(t, root, "runtime/talka-asr-runtime")
+	cfg := config.ASRConfig{
+		Provider:    "funasr_embedded",
+		RuntimePath: runtimePath,
+		Host:        "127.0.0.1",
+		Port:        10095,
+		Mode:        "2pass",
+		SampleRate:  16000,
+		StartupTimeout: 30,
+		Models: config.ASRModelsConfig{
+			ASR:    mustPath(t, root, "models/asr"),
+			Online: mustPath(t, root, "models/online"),
+			VAD:    mustPath(t, root, "models/vad"),
+			Punc:   mustPath(t, root, "models/punc"),
+			ITN:    mustPath(t, root, "models/itn"),
+		},
+	}
+
+	provider, err := newASRProviderFromConfig(cfg, root)
+	if err != nil {
+		t.Fatalf("newASRProviderFromConfig() error = %v", err)
+	}
+
+	if _, ok := provider.(*asr.UpstreamProvider); !ok {
+		t.Fatalf("provider type = %T, want *asr.UpstreamProvider", provider)
+	}
+}
+
+func TestNewASRProviderFromConfigBuildsExternalFunASRProvider(t *testing.T) {
+	cfg := config.ASRConfig{
+		Provider:   "funasr_external",
+		Host:       "127.0.0.1",
+		Port:       10095,
+		Mode:       "2pass",
+		SampleRate: 16000,
+		StartupTimeout: 30,
+	}
+
+	provider, err := newASRProviderFromConfig(cfg, t.TempDir())
+	if err != nil {
+		t.Fatalf("newASRProviderFromConfig() error = %v", err)
+	}
+
+	if _, ok := provider.(*asr.UpstreamProvider); !ok {
+		t.Fatalf("provider type = %T, want *asr.UpstreamProvider", provider)
+	}
+}
+
+func TestASRRuntimeArgsFromConfigDisablesLMWhenUnset(t *testing.T) {
+	args := asrRuntimeArgsFromConfig(config.ASRConfig{
+		Host: "127.0.0.1",
+		Port: 10095,
+		StartupTimeout: 30,
+		Models: config.ASRModelsConfig{
+			ASR:    "/tmp/asr",
+			Online: "/tmp/online",
+			VAD:    "/tmp/vad",
+			Punc:   "/tmp/punc",
+			ITN:    "/tmp/itn",
+			LM:     "",
+		},
+		HotwordPath: "",
+	})
+
+	assertContainsArgPair(t, args, "--lm-dir", "none")
+	assertContainsArgPair(t, args, "--hotword", "")
+}
+
+func TestASRRuntimeArgsFromConfigPassesLMAndHotwordPathsWhenConfigured(t *testing.T) {
+	args := asrRuntimeArgsFromConfig(config.ASRConfig{
+		Host: "127.0.0.1",
+		Port: 10095,
+		StartupTimeout: 30,
+		Models: config.ASRModelsConfig{
+			ASR:    "/tmp/asr",
+			Online: "/tmp/online",
+			VAD:    "/tmp/vad",
+			Punc:   "/tmp/punc",
+			ITN:    "/tmp/itn",
+			LM:     "/tmp/lm",
+		},
+		HotwordPath: "/tmp/hotwords.txt",
+	})
+
+	assertContainsArgPair(t, args, "--lm-dir", "/tmp/lm")
+	assertContainsArgPair(t, args, "--hotword", "/tmp/hotwords.txt")
+}
+
+func TestASRRuntimeArgsFromConfigIncludesConfiguredTimeoutInManagerConfigPath(t *testing.T) {
+	root := t.TempDir()
+	runtimePath := mustExecutablePath(t, root, "runtime/talka-asr-runtime")
+	cfg := config.ASRConfig{
+		Provider:       "funasr_embedded",
+		RuntimePath:    runtimePath,
+		Host:           "127.0.0.1",
+		Port:           10095,
+		Mode:           "2pass",
+		SampleRate:     16000,
+		StartupTimeout: 42,
+		Models: config.ASRModelsConfig{
+			ASR:    mustPath(t, root, "models/asr"),
+			Online: mustPath(t, root, "models/online"),
+			VAD:    mustPath(t, root, "models/vad"),
+			Punc:   mustPath(t, root, "models/punc"),
+			ITN:    mustPath(t, root, "models/itn"),
+		},
+	}
+
+	provider, err := newASRProviderFromConfig(cfg, root)
+	if err != nil {
+		t.Fatalf("newASRProviderFromConfig() error = %v", err)
+	}
+
+	upstream, ok := provider.(*asr.UpstreamProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *asr.UpstreamProvider", provider)
+	}
+
+	if got, want := upstream.ManagerStartupTimeout(), 42; got != want {
+		t.Fatalf("ManagerStartupTimeout() = %d, want %d", got, want)
+	}
+}
+
+func mustPath(t *testing.T, root, rel string) string {
+	t.Helper()
+	path := filepath.Join(root, rel)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", path, err)
+	}
+	return path
+}
+
+func assertContainsArgPair(t *testing.T, args []string, key, want string) {
+	t.Helper()
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == key {
+			if args[index+1] != want {
+				t.Fatalf("%s value = %q, want %q", key, args[index+1], want)
+			}
+			return
+		}
+	}
+	t.Fatalf("args missing %s: %v", key, args)
+}
+
+func mustExecutablePath(t *testing.T, root, rel string) string {
+	t.Helper()
+	path := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte("runtime"), 0o755); err != nil {
+		t.Fatalf("WriteFile(%q) error = %v", path, err)
+	}
+	return path
+}

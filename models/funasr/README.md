@@ -5,6 +5,7 @@ This directory is reserved for local FunASR ONNX assets.
 Expected subdirectories:
 
 - `paraformer-zh-onnx/`
+- `paraformer-zh-online-onnx/`
 - `fsmn-vad-onnx/`
 - `ct-punc-onnx/`
 - `itn-zh/`

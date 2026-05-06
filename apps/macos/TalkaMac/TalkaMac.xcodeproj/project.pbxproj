@@ -61,16 +61,14 @@
 			inputPaths = (
 				"$(SRCROOT)/../../scripts/build-go-binaries.sh",
 				"$(SRCROOT)/../../cmd/talka-server/main.go",
-				"$(SRCROOT)/../../cmd/talka-asr-runtime/main.go",
 			);
 			name = "Build Go Binaries";
 			outputPaths = (
 				"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/talka-server",
-				"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/talka-asr-runtime",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "cd ${PROJECT_DIR}/../../.. && ./scripts/build-go-binaries.sh --output-dir \"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\" --for-bundle";
+			shellScript = "cd ${PROJECT_DIR}/../../.. && ./scripts/build-go-binaries.sh --output-dir \"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\" --for-bundle --binaries \"talka-server\"";
 		};
 /* End PBXShellScriptBuildPhase section */
 

@@ -1,38 +1,84 @@
 import Foundation
 
-struct SidecarRuntimeConfigGenerator: RuntimeConfigGenerator {
+struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
     func generateConfig() throws -> URL {
-        let runtimePath = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/Resources/talka-asr-runtime")
-            .path
-
         let fileManager = FileManager.default
+        let configURL = try configURL(fileManager: fileManager)
+        let configDir = configURL.deletingLastPathComponent()
+        try fileManager.createDirectory(at: configDir, withIntermediateDirectories: true)
+        if fileManager.fileExists(atPath: configURL.path) {
+            return configURL
+        }
+
+        let resourcesURL = try runtimeResourcesURL()
+        let yaml = defaultConfigYAML(resourcesURL: resourcesURL)
+
+        try yaml.write(to: configURL, atomically: true, encoding: .utf8)
+        return configURL
+    }
+
+    private func configURL(fileManager: FileManager) throws -> URL {
+        if let override = ProcessInfo.processInfo.environment["TALKA_CONFIG_PATH"], !override.isEmpty {
+            return URL(fileURLWithPath: override)
+        }
+
         guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             throw NSError(
-                domain: "SidecarRuntimeConfigGenerator",
+                domain: "EmbeddedRuntimeConfigGenerator",
                 code: 1,
                 userInfo: [NSLocalizedDescriptionKey: "Unable to locate Application Support directory"]
             )
         }
 
-        let talkaDir = appSupport.appendingPathComponent("Talka")
-        try fileManager.createDirectory(at: talkaDir, withIntermediateDirectories: true)
+        return appSupport.appendingPathComponent("Talka/config.yaml")
+    }
 
-        let configURL = talkaDir.appendingPathComponent("config.yaml")
+    private func runtimeResourcesURL() throws -> URL {
+        if let override = ProcessInfo.processInfo.environment["TALKA_RESOURCES_PATH"], !override.isEmpty {
+            return URL(fileURLWithPath: override, isDirectory: true)
+        }
 
-        let yaml = """
+        if let resourceURL = Bundle.main.resourceURL {
+            return resourceURL
+        }
+
+        throw NSError(
+            domain: "EmbeddedRuntimeConfigGenerator",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "Unable to locate app bundle resources"]
+        )
+    }
+
+    private func defaultConfigYAML(resourcesURL: URL) -> String {
+        let runtimeURL = resourcesURL.appendingPathComponent("talka-asr-runtime")
+        let modelsURL = resourcesURL.appendingPathComponent("models/funasr")
+        let hotwordsURL = resourcesURL.appendingPathComponent("hotwords.txt")
+
+        return """
         server:
           bind_host: 0.0.0.0
           port: 8080
           service_name: Talka
 
         asr:
-          provider: sidecar
+          provider: funasr_embedded
+          runtime_path: \(runtimeURL.path)
           host: 127.0.0.1
-          port: 19095
-          runtime_path: \(runtimePath)
-          mode: twopass
+          port: 10095
+          mode: 2pass
           sample_rate: 16000
+          startup_timeout_seconds: 30
+          container_image: ""
+          container_name: ""
+          download_dir: ""
+          hotword_path: \(hotwordsURL.path)
+          models:
+            asr: \(modelsURL.appendingPathComponent("paraformer-zh-onnx").path)
+            online: \(modelsURL.appendingPathComponent("paraformer-zh-online-onnx").path)
+            vad: \(modelsURL.appendingPathComponent("fsmn-vad-onnx").path)
+            punc: \(modelsURL.appendingPathComponent("ct-punc-onnx").path)
+            itn: \(modelsURL.appendingPathComponent("itn-zh").path)
+            lm: ""
 
         llm:
           provider: ollama
@@ -47,8 +93,5 @@ struct SidecarRuntimeConfigGenerator: RuntimeConfigGenerator {
         logging:
           level: info
         """
-
-        try yaml.write(to: configURL, atomically: true, encoding: .utf8)
-        return configURL
     }
 }

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"talka/internal/asr"
 	"talka/internal/inject"
 	"talka/internal/protocol"
 	"talka/internal/session"
@@ -35,8 +36,9 @@ type iosAudioWebSocketResponse struct {
 }
 
 type iosAudioWebSocketError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code       string `json:"code"`
+	Message    string `json:"message"`
+	Diagnostic string `json:"diagnostic,omitempty"`
 }
 
 type iosAudioWireMessage struct {
@@ -108,14 +110,20 @@ func (a *App) handleIOSAudioStream(w http.ResponseWriter, r *http.Request) {
 		cancel()
 		if err != nil {
 			a.logger.Error("iOS audio session processing failed", "device_id", deviceID, "buffered_messages", len(messages), "error", err)
-			_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "process"))
+			if writeErr := writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "process")); writeErr != nil {
+				a.logger.Error("iOS audio websocket error response write failed", "device_id", deviceID, "error", writeErr)
+			} else if closeErr := writeIOSWebSocketClose(conn, 1000, ""); closeErr != nil {
+				a.logger.Error("iOS audio websocket close write failed", "device_id", deviceID, "error", closeErr)
+			}
 			return
 		}
 		a.logger.Info("iOS audio session processed", "device_id", deviceID, "buffered_messages", len(messages), "raw_transcript_chars", len(result.RawTranscript), "final_text_chars", len(result.FinalText))
-		a.queueIOSFinalTextInsertion(deviceID, result.FinalText)
 		if err := writeIOSWebSocketJSON(conn, iosAudioWebSocketResponse{OK: true, FinalText: result.FinalText}); err != nil {
 			a.logger.Error("iOS audio websocket response write failed", "device_id", deviceID, "error", err)
+		} else if closeErr := writeIOSWebSocketClose(conn, 1000, ""); closeErr != nil {
+			a.logger.Error("iOS audio websocket close write failed", "device_id", deviceID, "error", closeErr)
 		}
+		a.queueIOSFinalTextInsertion(deviceID, result.FinalText)
 		return
 	}
 }
@@ -189,7 +197,42 @@ func iosWebSocketErrorCode(err error, phase string) iosAudioWebSocketError {
 	case "decode":
 		return iosAudioWebSocketError{Code: "invalid_message", Message: "audio session message is invalid"}
 	default:
-		return iosAudioWebSocketError{Code: "processing_failed", Message: "audio session could not be processed"}
+		if code := asr.RuntimeErrorCodeOf(err); code != "" {
+			diagnostic := asr.RuntimeErrorDiagnosticOf(err)
+			return iosAudioWebSocketError{
+				Code:       code,
+				Message:    iosRuntimeFailureMessage(code, diagnostic, err.Error()),
+				Diagnostic: diagnostic,
+			}
+		}
+		return iosAudioWebSocketError{Code: "processing_failed", Message: "audio session could not be processed", Diagnostic: err.Error()}
+	}
+}
+
+func iosRuntimeFailureMessage(code, diagnostic, fallback string) string {
+	lower := strings.ToLower(strings.TrimSpace(diagnostic))
+	switch {
+	case code == asr.ErrorCodeModelMissing && strings.Contains(lower, "tlg.fst"):
+		return "The Mac ASR language model bundle is missing."
+	case code == asr.ErrorCodeModelMissing:
+		return "The Mac ASR model bundle is incomplete."
+	case code == asr.ErrorCodeRuntimeConfigInvalid:
+		return "The Mac ASR configuration is invalid."
+	case strings.Contains(lower, "address already in use"):
+		return "The Mac ASR runtime could not claim a local port."
+	case strings.Contains(lower, "did not become healthy within"):
+		return "The Mac ASR runtime took too long to become ready."
+	case code == asr.ErrorCodeRuntimeStartupFailed:
+		return "The Mac ASR runtime could not start."
+	case code == asr.ErrorCodeRuntimeUnavailable:
+		return "The Mac ASR runtime is unavailable."
+	case code == asr.ErrorCodeEmptyTranscript:
+		return "The Mac ASR runtime returned an empty transcript."
+	default:
+		if strings.TrimSpace(fallback) != "" {
+			return fallback
+		}
+		return "audio session could not be processed"
 	}
 }
 
@@ -313,6 +356,24 @@ func writeIOSWebSocketJSON(conn net.Conn, response iosAudioWebSocketResponse) er
 
 func writeIOSWebSocketError(conn net.Conn, safe iosAudioWebSocketError) error {
 	return writeIOSWebSocketJSON(conn, iosAudioWebSocketResponse{OK: false, Error: &safe})
+}
+
+func writeIOSWebSocketClose(conn net.Conn, code uint16, reason string) error {
+	payload := make([]byte, 2+len(reason))
+	binary.BigEndian.PutUint16(payload[:2], code)
+	copy(payload[2:], reason)
+
+	frame := []byte{0x88}
+	if len(payload) < 126 {
+		frame = append(frame, byte(len(payload)))
+	} else if len(payload) <= 65535 {
+		frame = append(frame, 126, byte(len(payload)>>8), byte(len(payload)))
+	} else {
+		return fmt.Errorf("websocket close payload too large")
+	}
+	frame = append(frame, payload...)
+	_, err := conn.Write(frame)
+	return err
 }
 
 func headerContainsToken(header http.Header, key, token string) bool {

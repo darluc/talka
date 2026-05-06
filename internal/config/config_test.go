@@ -27,12 +27,31 @@ func TestDefaultConfigMatchesScaffoldConstraints(t *testing.T) {
 		t.Fatalf("Server.ServiceName = %q, want %q", cfg.Server.ServiceName, "Talka")
 	}
 
-	if cfg.ASR.Provider != "funasr_onnx" {
-		t.Fatalf("ASR.Provider = %q, want %q", cfg.ASR.Provider, "funasr_onnx")
+	if cfg.ASR.Provider != "funasr_embedded" {
+		t.Fatalf("ASR.Provider = %q, want %q", cfg.ASR.Provider, "funasr_embedded")
 	}
 
 	if cfg.ASR.SampleRate != 16000 {
 		t.Fatalf("ASR.SampleRate = %d, want %d", cfg.ASR.SampleRate, 16000)
+	}
+	if cfg.ASR.StartupTimeout != 30 {
+		t.Fatalf("ASR.StartupTimeout = %d, want %d", cfg.ASR.StartupTimeout, 30)
+	}
+
+	if cfg.ASR.Mode != "2pass" {
+		t.Fatalf("ASR.Mode = %q, want %q", cfg.ASR.Mode, "2pass")
+	}
+
+	if cfg.ASR.RuntimePath == "" {
+		t.Fatal("ASR.RuntimePath is empty")
+	}
+
+	if cfg.ASR.Models.ASR != "models/funasr/paraformer-zh-onnx" {
+		t.Fatalf("ASR.Models.ASR = %q, want embedded model path", cfg.ASR.Models.ASR)
+	}
+
+	if cfg.ASR.Models.Online != "models/funasr/paraformer-zh-online-onnx" {
+		t.Fatalf("ASR.Models.Online = %q, want embedded online model path", cfg.ASR.Models.Online)
 	}
 
 	if cfg.LLM.Provider != "ollama" {
@@ -56,10 +75,11 @@ func TestDefaultConfigMatchesScaffoldConstraints(t *testing.T) {
 	}
 }
 
-func TestLoadAppliesDefaultsAndValidatesRelativePaths(t *testing.T) {
+func TestLoadAppliesDefaultsAndValidatesEmbeddedRuntimeConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	mustMkdir(t, tmpDir, "runtime")
 	mustMkdir(t, tmpDir, "models/asr")
+	mustMkdir(t, tmpDir, "models/online")
 	mustMkdir(t, tmpDir, "models/vad")
 	mustMkdir(t, tmpDir, "models/punc")
 	mustMkdir(t, tmpDir, "models/itn")
@@ -67,10 +87,13 @@ func TestLoadAppliesDefaultsAndValidatesRelativePaths(t *testing.T) {
 	configPath := writeTempConfig(t, tmpDir, []byte(`server:
   port: 0
 asr:
+  provider: funasr_embedded
   runtime_path: runtime
   port: 10095
+  startup_timeout_seconds: 30
   models:
     asr: models/asr
+    online: models/online
     vad: models/vad
     punc: models/punc
     itn: models/itn
@@ -93,24 +116,31 @@ asr:
 		t.Fatalf("ASR.RuntimePath = %q, want %q", cfg.ASR.RuntimePath, "runtime")
 	}
 
-	if cfg.ASR.Models.ASR != "models/asr" {
-		t.Fatalf("ASR.Models.ASR = %q, want %q", cfg.ASR.Models.ASR, "models/asr")
+	if cfg.ASR.Host != "127.0.0.1" {
+		t.Fatalf("ASR.Host = %q, want %q", cfg.ASR.Host, "127.0.0.1")
+	}
+
+	if cfg.ASR.Models.Online != "models/online" {
+		t.Fatalf("ASR.Models.Online = %q, want embedded online model path", cfg.ASR.Models.Online)
 	}
 }
 
-func TestLoadRejectsMissingASRModelPath(t *testing.T) {
+func TestLoadRejectsMissingEmbeddedOnlineModel(t *testing.T) {
 	tmpDir := t.TempDir()
 	mustMkdir(t, tmpDir, "runtime")
 	mustMkdir(t, tmpDir, "models/asr")
+	mustMkdir(t, tmpDir, "models/vad")
 	mustMkdir(t, tmpDir, "models/punc")
 	mustMkdir(t, tmpDir, "models/itn")
-
-	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
+configPath := writeTempConfig(t, tmpDir, []byte(`asr:
+  provider: funasr_embedded
   runtime_path: runtime
   port: 10095
+  startup_timeout_seconds: 30
   models:
     asr: models/asr
-    vad: models/missing-vad
+    online: ""
+    vad: models/vad
     punc: models/punc
     itn: models/itn
 `))
@@ -120,8 +150,29 @@ func TestLoadRejectsMissingASRModelPath(t *testing.T) {
 		t.Fatal("Load() error = nil, want missing model path error")
 	}
 
-	if got := err.Error(); got == "" || !containsAll(got, []string{"asr.models.vad", "missing-vad"}) {
-		t.Fatalf("Load() error = %q, want actionable model path error", got)
+	if got := err.Error(); got == "" || !containsAll(got, []string{"asr.models.online", "must not be empty"}) {
+		t.Fatalf("Load() error = %q, want actionable online model error", got)
+	}
+}
+
+func TestLoadAllowsExternalFunASRWithoutLocalRuntimeAssets(t *testing.T) {
+	tmpDir := t.TempDir()
+configPath := writeTempConfig(t, tmpDir, []byte(`asr:
+  provider: funasr_external
+  host: 127.0.0.1
+  port: 10095
+  mode: 2pass
+  sample_rate: 16000
+  startup_timeout_seconds: 30
+`))
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	if cfg.ASR.Provider != "funasr_external" {
+		t.Fatalf("ASR.Provider = %q, want %q", cfg.ASR.Provider, "funasr_external")
 	}
 }
 

@@ -56,6 +56,13 @@ func runServe(stdout, stderr io.Writer, args []string) error {
 	upstreamURL := envOrDefault("TALKA_FUNASR_UPSTREAM_URL", "ws://127.0.0.1:10095")
 	mode := "2pass"
 	crashMidstream := false
+	ignoredFlagsWithValues := map[string]bool{
+		"--model-dir":        true,
+		"--online-model-dir": true,
+		"--vad-dir":          true,
+		"--punc-dir":         true,
+		"--itn-dir":          true,
+	}
 	for index := 0; index < len(args); index++ {
 		switch args[index] {
 		case "--addr":
@@ -79,6 +86,13 @@ func runServe(stdout, stderr io.Writer, args []string) error {
 		case "--crash-midstream":
 			crashMidstream = true
 		default:
+			if ignoredFlagsWithValues[args[index]] {
+				index++
+				if index >= len(args) {
+					return fmt.Errorf("serve requires a value after %s", args[index-1])
+				}
+				continue
+			}
 			_, _ = fmt.Fprint(stderr, serveUsage())
 			return fmt.Errorf("unknown serve argument %q", args[index])
 		}
@@ -239,7 +253,7 @@ func mainUsage() string {
 }
 
 func serveUsage() string {
-	return "usage: talka-asr-runtime serve [--addr 127.0.0.1:19095] [--upstream-url ws://127.0.0.1:10095] [--mode 2pass] [--crash-midstream]\n"
+	return "usage: talka-asr-runtime serve [--addr 127.0.0.1:19095] [--upstream-url ws://127.0.0.1:10095] [--mode 2pass] [--model-dir <path>] [--online-model-dir <path>] [--vad-dir <path>] [--punc-dir <path>] [--itn-dir <path>] [--crash-midstream]\n"
 }
 
 func healthUsage() string {

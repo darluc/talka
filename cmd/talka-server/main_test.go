@@ -15,9 +15,9 @@ import (
 )
 
 type fakePublisher struct {
-	started bool
-	stopped bool
-	startErr error
+	started   bool
+	stopped   bool
+	startErr  error
 	startDesc mdns.Descriptor
 	startPort int
 }
@@ -55,6 +55,7 @@ func TestRunServesStatusJSON(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, root, "runtime")
 	mustMkdir(t, root, "models/asr")
+	mustMkdir(t, root, "models/online")
 	mustMkdir(t, root, "models/vad")
 	mustMkdir(t, root, "models/punc")
 	mustMkdir(t, root, "models/itn")
@@ -73,6 +74,7 @@ asr:
   sample_rate: 16000
   models:
     asr: models/asr
+    online: models/online
     vad: models/vad
     punc: models/punc
     itn: models/itn
@@ -136,6 +138,7 @@ func TestRunStartsAndStopsDiscoveryPublisher(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, root, "runtime")
 	mustMkdir(t, root, "models/asr")
+	mustMkdir(t, root, "models/online")
 	mustMkdir(t, root, "models/vad")
 	mustMkdir(t, root, "models/punc")
 	mustMkdir(t, root, "models/itn")
@@ -154,6 +157,7 @@ asr:
   sample_rate: 16000
   models:
     asr: models/asr
+    online: models/online
     vad: models/vad
     punc: models/punc
     itn: models/itn
@@ -222,6 +226,7 @@ func TestRunContinuesWhenDiscoveryPublisherUnavailable(t *testing.T) {
 	root := t.TempDir()
 	mustMkdir(t, root, "runtime")
 	mustMkdir(t, root, "models/asr")
+	mustMkdir(t, root, "models/online")
 	mustMkdir(t, root, "models/vad")
 	mustMkdir(t, root, "models/punc")
 	mustMkdir(t, root, "models/itn")
@@ -240,6 +245,7 @@ asr:
   sample_rate: 16000
   models:
     asr: models/asr
+    online: models/online
     vad: models/vad
     punc: models/punc
     itn: models/itn

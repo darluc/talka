@@ -7,7 +7,7 @@ if [ "${1-}" = "--verify-only" ] || [ "${1-}" = "" ]; then
     exit 1
   fi
 
-  for dir in paraformer-zh-onnx fsmn-vad-onnx ct-punc-onnx itn-zh; do
+  for dir in paraformer-zh-onnx paraformer-zh-online-onnx fsmn-vad-onnx ct-punc-onnx itn-zh; do
     mkdir -p "models/funasr/$dir"
   done
 

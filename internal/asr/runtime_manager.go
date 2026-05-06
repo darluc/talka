@@ -18,16 +18,18 @@ import (
 )
 
 const (
-	defaultStartupTimeout = 5 * time.Second
+	defaultStartupTimeout = 30 * time.Second
 	defaultStopTimeout    = 2 * time.Second
 	defaultHealthTimeout  = 500 * time.Millisecond
 )
 
 type ModelPaths struct {
-	ASR  string
-	VAD  string
-	Punc string
-	ITN  string
+	ASR    string
+	Online string
+	VAD    string
+	Punc   string
+	ITN    string
+	LM     string
 }
 
 type RuntimeManagerConfig struct {
@@ -91,10 +93,11 @@ func (cfg RuntimeManagerConfig) Validate() error {
 	}
 
 	for field, value := range map[string]string{
-		"models.asr":  cfg.Models.ASR,
-		"models.vad":  cfg.Models.VAD,
-		"models.punc": cfg.Models.Punc,
-		"models.itn":  cfg.Models.ITN,
+		"models.asr":    cfg.Models.ASR,
+		"models.online": cfg.Models.Online,
+		"models.vad":    cfg.Models.VAD,
+		"models.punc":   cfg.Models.Punc,
+		"models.itn":    cfg.Models.ITN,
 	} {
 		if strings.TrimSpace(value) == "" {
 			issues = append(issues, field+" must not be empty")
@@ -102,6 +105,11 @@ func (cfg RuntimeManagerConfig) Validate() error {
 		}
 		if err := mustExistPath(value); err != nil {
 			issues = append(issues, field+" "+err.Error())
+		}
+	}
+	if strings.TrimSpace(cfg.Models.LM) != "" {
+		if err := mustExistPath(cfg.Models.LM); err != nil {
+			issues = append(issues, "models.lm "+err.Error())
 		}
 	}
 

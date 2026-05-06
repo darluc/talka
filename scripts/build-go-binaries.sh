@@ -3,6 +3,7 @@ set -eu
 
 OUTPUT_DIR="./bin"
 FOR_BUNDLE=""
+BINARIES="${BINARIES:-talka-server talka-asr-runtime}"
 
 while [ $# -gt 0 ]; do
   case "${1}" in
@@ -18,16 +19,24 @@ while [ $# -gt 0 ]; do
       FOR_BUNDLE="yes"
       shift
       ;;
+    --binaries)
+      if [ -z "${2-}" ]; then
+        printf 'error: --binaries requires a space-separated binary list\n' >&2
+        exit 2
+      fi
+      BINARIES="${2}"
+      shift 2
+      ;;
     --help|-h)
-      printf 'usage: %s [--output-dir <dir>] [--for-bundle]\n' "$0"
-      printf '\nBuilds talka-server and talka-asr-runtime Go binaries for macOS.\n'
+      printf 'usage: %s [--output-dir <dir>] [--for-bundle] [--binaries \"name1 name2\"]\n' "$0"
+      printf '\nBuilds Go binaries for macOS.\n'
       printf 'Set ARCHS to "arm64 x86_64" to build for both architectures.\n'
-      printf 'Use --for-bundle to output clean names (talka-server, talka-asr-runtime)\n'
+      printf 'Use --for-bundle to output clean names (for example talka-server)\n'
       printf 'for embedding inside an app bundle.\n'
       exit 0
       ;;
     *)
-      printf 'usage: %s [--output-dir <dir>] [--for-bundle]\n' "$0" >&2
+      printf 'usage: %s [--output-dir <dir>] [--for-bundle] [--binaries \"name1 name2\"]\n' "$0" >&2
       exit 2
       ;;
   esac
@@ -41,8 +50,23 @@ fi
 printf 'Building Go binaries for macOS\n'
 printf 'Go version: %s\n' "$(go version)"
 printf 'Output dir: %s\n' "$OUTPUT_DIR"
+printf 'Binaries: %s\n' "$BINARIES"
 
 ARCHS="${ARCHS:-arm64}"
+
+mkdir -p "$OUTPUT_DIR"
+
+temp_dir=""
+cleanup() {
+  if [ -n "$temp_dir" ] && [ -d "$temp_dir" ]; then
+    rm -rf "$temp_dir"
+  fi
+}
+trap cleanup EXIT INT TERM
+
+if [ -n "$FOR_BUNDLE" ]; then
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/talka-go-build.XXXXXX")"
+fi
 
 for arch in $ARCHS; do
   case "$arch" in
@@ -61,9 +85,9 @@ for arch in $ARCHS; do
   export GOOS="darwin"
   export GOARCH="$goarch"
 
-  for binary in talka-server talka-asr-runtime; do
+  for binary in $BINARIES; do
     if [ -n "$FOR_BUNDLE" ]; then
-      output="${OUTPUT_DIR}/${binary}"
+      output="${temp_dir}/${binary}_${goarch}"
     else
       output="${OUTPUT_DIR}/${binary}_darwin_${goarch}"
     fi
@@ -73,5 +97,36 @@ for arch in $ARCHS; do
     printf '    -> %s\n' "$output"
   done
 done
+
+if [ -n "$FOR_BUNDLE" ]; then
+  arch_count=0
+  for _arch in $ARCHS; do
+    arch_count=$((arch_count + 1))
+  done
+
+  for binary in $BINARIES; do
+    final_output="${OUTPUT_DIR}/${binary}"
+    if [ "$arch_count" -eq 1 ]; then
+      mv "${temp_dir}/${binary}_"* "$final_output"
+      chmod +x "$final_output"
+      printf '  bundled %s -> %s\n' "$binary" "$final_output"
+      continue
+    fi
+
+    inputs=""
+    for arch in $ARCHS; do
+      case "$arch" in
+        arm64) goarch="arm64" ;;
+        x86_64) goarch="amd64" ;;
+      esac
+      inputs="$inputs ${temp_dir}/${binary}_${goarch}"
+    done
+
+    # shellcheck disable=SC2086
+    lipo -create $inputs -output "$final_output"
+    chmod +x "$final_output"
+    printf '  bundled %s (universal) -> %s\n' "$binary" "$final_output"
+  done
+fi
 
 printf 'Done.\n'

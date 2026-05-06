@@ -19,20 +19,27 @@ type ServerConfig struct {
 }
 
 type ASRConfig struct {
-	Provider    string          `json:"provider" yaml:"provider"`
-	RuntimePath string          `json:"runtime_path" yaml:"runtime_path"`
-	Host        string          `json:"host" yaml:"host"`
-	Port        int             `json:"port" yaml:"port"`
-	Mode        string          `json:"mode" yaml:"mode"`
-	SampleRate  int             `json:"sample_rate" yaml:"sample_rate"`
-	Models      ASRModelsConfig `json:"models" yaml:"models"`
+	Provider       string          `json:"provider" yaml:"provider"`
+	RuntimePath    string          `json:"runtime_path" yaml:"runtime_path"`
+	Host           string          `json:"host" yaml:"host"`
+	Port           int             `json:"port" yaml:"port"`
+	Mode           string          `json:"mode" yaml:"mode"`
+	SampleRate     int             `json:"sample_rate" yaml:"sample_rate"`
+	StartupTimeout int             `json:"startup_timeout_seconds" yaml:"startup_timeout_seconds"`
+	ContainerImage string          `json:"container_image" yaml:"container_image"`
+	ContainerName  string          `json:"container_name" yaml:"container_name"`
+	DownloadDir    string          `json:"download_dir" yaml:"download_dir"`
+	HotwordPath    string          `json:"hotword_path" yaml:"hotword_path"`
+	Models         ASRModelsConfig `json:"models" yaml:"models"`
 }
 
 type ASRModelsConfig struct {
-	ASR  string `json:"asr" yaml:"asr"`
-	VAD  string `json:"vad" yaml:"vad"`
-	Punc string `json:"punc" yaml:"punc"`
-	ITN  string `json:"itn" yaml:"itn"`
+	ASR    string `json:"asr" yaml:"asr"`
+	Online string `json:"online" yaml:"online"`
+	VAD    string `json:"vad" yaml:"vad"`
+	Punc   string `json:"punc" yaml:"punc"`
+	ITN    string `json:"itn" yaml:"itn"`
+	LM     string `json:"lm" yaml:"lm"`
 }
 
 type LLMConfig struct {
@@ -65,17 +72,24 @@ func Default() Config {
 			ServiceName: "Talka",
 		},
 		ASR: ASRConfig{
-			Provider:    "funasr_onnx",
-			RuntimePath: "/Applications/Talka.app/Contents/Resources/talka-asr-runtime",
-			Host:        "127.0.0.1",
-			Port:        10095,
-			Mode:        "twopass",
-			SampleRate:  16000,
+			Provider:       "funasr_embedded",
+			RuntimePath:    "talka-asr-runtime",
+			Host:           "127.0.0.1",
+			Port:           10095,
+			Mode:           "2pass",
+			SampleRate:     16000,
+			StartupTimeout: 30,
+			ContainerImage: "registry.cn-hangzhou.aliyuncs.com/funasr_repo/funasr:funasr-runtime-sdk-online-cpu-0.1.13",
+			ContainerName:  "talka-funasr",
+			DownloadDir:    "funasr-downloads",
+			HotwordPath:    "",
 			Models: ASRModelsConfig{
-				ASR:  "models/funasr/paraformer-zh-onnx",
-				VAD:  "models/funasr/fsmn-vad-onnx",
-				Punc: "models/funasr/ct-punc-onnx",
-				ITN:  "models/funasr/itn-zh",
+				ASR:    "models/funasr/paraformer-zh-onnx",
+				Online: "models/funasr/paraformer-zh-online-onnx",
+				VAD:    "models/funasr/fsmn-vad-onnx",
+				Punc:   "models/funasr/ct-punc-onnx",
+				ITN:    "models/funasr/itn-zh",
+				LM:     "",
 			},
 		},
 		LLM: LLMConfig{

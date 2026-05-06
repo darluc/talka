@@ -195,6 +195,16 @@ enum RemoteMicFlowError: LocalizedError, Equatable {
     }
 }
 
+struct RemoteMicDetailedError: LocalizedError, Equatable {
+    let code: String
+    let userMessage: String
+    let diagnostic: String?
+
+    var errorDescription: String? {
+        userMessage
+    }
+}
+
 protocol RemoteMacDiscovering {
     func discoverMacs() async throws -> [DiscoveredMac]
 }
@@ -706,7 +716,8 @@ final class RemoteMicShellViewModel: ObservableObject {
         } catch let error as RemoteMicFlowError {
             await stopAfterRecordingError(error)
         } catch {
-            await stopAfterRecordingError(.recordingFailed(error.localizedDescription))
+            applyDetailedRecordingDiagnostic(from: error)
+            await stopAfterRecordingError(recordingFailure(from: error))
         }
     }
 
@@ -727,8 +738,9 @@ final class RemoteMicShellViewModel: ObservableObject {
                     do {
                         try await self.sendPCMChunk(pcm)
                     } catch {
-                        self.lastAudioDiagnostic = "sendPCMChunk/sendAudioFrame failed: \(error.localizedDescription)"
-                        await self.stopAfterRecordingError(.recordingFailed(error.localizedDescription))
+                        guard self.recordingState == .recording else { return }
+                        self.applyDetailedRecordingDiagnostic(from: error, fallback: "sendPCMChunk/sendAudioFrame failed: \(error.localizedDescription)")
+                        await self.stopAfterRecordingError(self.recordingFailure(from: error))
                     }
                 }
             }
@@ -745,10 +757,13 @@ final class RemoteMicShellViewModel: ObservableObject {
             await stopAfterRecordingError(error)
         } catch {
             let message = error.localizedDescription
-            lastAudioDiagnostic = message.contains("Secure audio session is not established")
-                ? "no active secure audio session before websocket start"
-                : "WebSocket bootstrap/sendAudioStart failed: \(message)"
-            await stopAfterRecordingError(.recordingFailed(error.localizedDescription))
+            applyDetailedRecordingDiagnostic(
+                from: error,
+                fallback: message.contains("Secure audio session is not established")
+                    ? "no active secure audio session before websocket start"
+                    : "WebSocket bootstrap/sendAudioStart failed: \(message)"
+            )
+            await stopAfterRecordingError(recordingFailure(from: error))
         }
     }
 
@@ -760,11 +775,13 @@ final class RemoteMicShellViewModel: ObservableObject {
             try await audioStreamClient.sendAudioStop(lastSequence: lastAudioSequence)
             recordingState = .idle
             audioLevel = 0
+            lastErrorMessage = nil
             lastAudioDiagnostic = nil
         } catch let error as RemoteMicFlowError {
             await stopAfterRecordingError(error)
         } catch {
-            await stopAfterRecordingError(.recordingFailed(error.localizedDescription))
+            applyDetailedRecordingDiagnostic(from: error)
+            await stopAfterRecordingError(recordingFailure(from: error))
         }
     }
 
@@ -779,11 +796,15 @@ final class RemoteMicShellViewModel: ObservableObject {
         } catch let error as RemoteMicFlowError {
             await stopAfterRecordingError(error)
         } catch {
-            await stopAfterRecordingError(.recordingFailed(error.localizedDescription))
+            applyDetailedRecordingDiagnostic(from: error)
+            await stopAfterRecordingError(recordingFailure(from: error))
         }
     }
 
     private func sendPCMChunk(_ chunk: Data) async throws {
+        guard recordingState == .recording else {
+            return
+        }
         print("[Talka] sendPCMChunk called with chunk size=\(chunk.count)")
         if !chunk.isEmpty {
             cancelFirstFrameTimeout()
@@ -797,10 +818,17 @@ final class RemoteMicShellViewModel: ObservableObject {
         try frameQueue.enqueue(frames)
 
         for frame in frameQueue.drain() {
-            lastAudioSequence += 1
+            guard recordingState == .recording else {
+                return
+            }
+            let sequence = lastAudioSequence + 1
             audioLevel = frame.isEmpty ? 0 : 1
-            print("[Talka] sending audio frame seq=\(lastAudioSequence), size=\(frame.count)")
-            try await audioStreamClient.sendAudioFrame(sequence: lastAudioSequence, payload: frame)
+            print("[Talka] sending audio frame seq=\(sequence), size=\(frame.count)")
+            try await audioStreamClient.sendAudioFrame(sequence: sequence, payload: frame)
+            guard recordingState == .recording else {
+                return
+            }
+            lastAudioSequence = sequence
             print("[Talka] audio frame sent successfully")
         }
     }
@@ -841,6 +869,9 @@ final class RemoteMicShellViewModel: ObservableObject {
     }
 
     private func handleMicrophoneDiagnostic(_ message: String) async {
+        guard recordingState == .recording else {
+            return
+        }
         lastAudioDiagnostic = message
         await stopAfterRecordingError(.recordingFailed(message))
     }
@@ -851,6 +882,30 @@ final class RemoteMicShellViewModel: ObservableObject {
             return "no active secure audio session before websocket start"
         }
         return "WebSocket bootstrap/sendAudioStart failed: \(message)"
+    }
+
+    private func recordingFailure(from error: Error) -> RemoteMicFlowError {
+        if let flow = error as? RemoteMicFlowError {
+            return flow
+        }
+        if let detailed = error as? RemoteMicDetailedError {
+            return .recordingFailed(detailed.userMessage)
+        }
+        return .recordingFailed(error.localizedDescription)
+    }
+
+    private func applyDetailedRecordingDiagnostic(from error: Error, fallback: String? = nil) {
+        if let detailed = error as? RemoteMicDetailedError {
+            if let diagnostic = detailed.diagnostic, !diagnostic.isEmpty {
+                lastAudioDiagnostic = "server \(detailed.code): \(diagnostic)"
+            } else {
+                lastAudioDiagnostic = "server \(detailed.code): \(detailed.userMessage)"
+            }
+            return
+        }
+        if let fallback {
+            lastAudioDiagnostic = fallback
+        }
     }
 }
 
@@ -1011,6 +1066,7 @@ struct SecureEncryptedAudioMessage: Encodable {
 struct SecureAudioWebSocketServerError: Decodable {
     let code: String
     let message: String
+    let diagnostic: String?
 }
 
 struct SecureAudioWebSocketServerResponse: Decodable {
@@ -1242,7 +1298,11 @@ final class SecureAudioStreamClient: AudioStreamClient {
             if error?.code == "replayed_sequence" || error?.code == "out_of_order_sequence" {
                 clearSecureSession()
             }
-            throw RemoteMicFlowError.recordingFailed(error?.message ?? "The Mac could not finish processing this recording.")
+            throw RemoteMicDetailedError(
+                code: error?.code ?? "processing_failed",
+                userMessage: error?.message ?? "The Mac could not finish processing this recording.",
+                diagnostic: error?.diagnostic
+            )
         }
     }
 

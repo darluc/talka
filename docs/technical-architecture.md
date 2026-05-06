@@ -7,7 +7,8 @@ Talka uses a split local architecture:
 - iOS app: audio capture and user-facing microphone controls.
 - macOS Go service: pairing, encrypted transport, audio session control, ASR orchestration, Ollama post-processing, and text insertion.
 - macOS SwiftUI shell: menu bar UI, PIN window, settings, and permission guidance.
-- FunASR C++/ONNX Runtime sidecar: local speech recognition.
+- Embedded FunASR C++/ONNX Runtime: default local speech recognition backend packaged inside the macOS app bundle.
+- External FunASR runtime or legacy Talka sidecar: optional advanced compatibility backends.
 - Ollama: local LLM post-processing.
 
 ```mermaid
@@ -15,8 +16,10 @@ flowchart LR
   IOS["iOS App\nSwiftUI + AVAudioEngine"] --> DISC["Bonjour/mDNS\n_talka._tcp"]
   IOS --> ENC["Encrypted Audio Stream\nWebSocket or QUIC-like frames"]
   ENC --> GO["macOS Go Service"]
-  GO --> ASR["FunASR C++/ONNX Runtime\nLocal ASR Sidecar"]
+  GO --> ASR["Embedded FunASR Runtime\nDefault Local ASR"]
   ASR --> GO
+  GO -. optional .-> EXT["External FunASR / Legacy Sidecar"]
+  EXT -.-> GO
   GO --> OLLAMA["Ollama\nText Cleanup + Final Polish"]
   OLLAMA --> GO
   GO --> INJECT["macOS Text Injection\nClipboard + Cmd+V"]
@@ -60,7 +63,7 @@ models/
   funasr/
 ```
 
-`cmd/talka-asr-runtime` may be a wrapper, packaging target, or build integration around FunASR runtime rather than original Talka C++ code.
+`cmd/talka-asr-runtime` remains useful as a compatibility entrypoint and packaging target, but the packaged macOS app should boot the embedded FunASR runtime by default instead of requiring Docker or a separately managed runtime.
 
 ## iOS App
 
@@ -90,10 +93,11 @@ The app should avoid starting local network discovery before the user chooses to
 
 ## macOS App And Service
 
-The macOS side has two layers:
+The macOS side has three cooperating layers:
 
 1. SwiftUI app shell.
 2. Go service core.
+3. Embedded ASR runtime and model assets bundled in the app resources.
 
 The SwiftUI layer owns:
 
@@ -110,7 +114,7 @@ The Go service owns:
 - Pairing state.
 - Encrypted session state.
 - Audio stream session state.
-- ASR runtime management.
+- ASR runtime management across embedded, external, and legacy compatibility modes.
 - Ollama API calls.
 - Text insertion orchestration.
 - Structured logs.
@@ -225,29 +229,44 @@ Audio session metadata:
 
 ## ASR Runtime
 
-ASR will use FunASR C++/ONNX Runtime directly.
+ASR uses FunASR C++/ONNX Runtime directly, but the packaged product should default to an embedded runtime instead of requiring Docker or a separately launched process.
 
-Preferred process model:
+Default packaged process model:
 
 ```text
-talka-server        Go process
-talka-asr-runtime   FunASR C++/ONNX sidecar process
+TalkaMac.app
+  Contents/MacOS/TalkaMac
+  Contents/Resources/talka-server
+  Contents/Resources/talka-asr-runtime
+  Contents/Resources/models/funasr/...
+  Contents/Frameworks/*.dylib
 ```
 
-The Go service starts, monitors, and restarts the ASR sidecar. The sidecar should bind only to localhost or a Unix domain socket.
+Supported provider modes:
+
+```text
+funasr_embedded   bundled runtime + bundled models
+funasr_external   direct websocket connection to external FunASR runtime
+sidecar           compatibility mode for legacy Talka websocket sidecar
+funasr_container  optional developer or migration mode
+```
+
+In embedded mode, the Go service starts, monitors, and restarts the bundled runtime. In external mode, the Go service skips process ownership and performs direct websocket health checks instead. In legacy mode, the Go service talks to the older sidecar contract for backward compatibility.
 
 Benefits:
 
 - Keeps Go service independent from C++ runtime crashes.
 - Avoids complex cgo linkage in the first version.
-- Makes ASR runtime replaceable.
-- Allows independent benchmarking and logging.
+- Makes the ASR backend replaceable without changing the iOS client flow.
+- Allows direct packaged distribution without Docker in the default path.
+- Preserves a migration path for external runtimes and legacy deployments.
 
 Required ASR model set:
 
 ```text
 models/funasr/
   paraformer-zh-onnx/
+  paraformer-zh-online-onnx/
   fsmn-vad-onnx/
   ct-punc-onnx/
   itn-zh/
@@ -263,7 +282,7 @@ ASR modes:
 MVP ASR behavior:
 
 1. Go receives encrypted PCM frames from iOS.
-2. Go forwards frames to ASR runtime.
+2. Go forwards frames to the selected ASR runtime.
 3. ASR runtime returns partial text for display.
 4. ASR runtime returns final segment text after VAD endpointing.
 5. Go accumulates final segments.
@@ -336,14 +355,15 @@ server:
   service_name: Talka
 
 asr:
-  provider: funasr_onnx
+  provider: funasr_embedded
   runtime_path: /Applications/Talka.app/Contents/Resources/talka-asr-runtime
   host: 127.0.0.1
   port: 10095
-  mode: twopass
+  mode: 2pass
   sample_rate: 16000
   models:
     asr: models/funasr/paraformer-zh-onnx
+    online: models/funasr/paraformer-zh-online-onnx
     vad: models/funasr/fsmn-vad-onnx
     punc: models/funasr/ct-punc-onnx
     itn: models/funasr/itn-zh
@@ -362,6 +382,17 @@ logging:
   level: info
   capture_audio: false
   capture_transcript: false
+```
+
+Example external runtime override:
+
+```yaml
+asr:
+  provider: funasr_external
+  host: 127.0.0.1
+  port: 10095
+  mode: 2pass
+  sample_rate: 16000
 ```
 
 Secrets and paired-device keys should live in Keychain, not in this YAML file.
@@ -407,7 +438,8 @@ Do not log raw audio or full transcript unless diagnostic capture is explicitly 
 - Bonjour discovery is not authentication.
 - PIN pairing authenticates first contact.
 - Keychain stores trusted device identity.
-- ASR sidecar listens only on localhost or Unix socket.
+- Embedded ASR runtime listens only on localhost or Unix socket.
+- The packaged macOS app must not require Docker in the default path.
 - Ollama is called only at the configured local URL by default.
 - No cloud endpoint should be introduced without explicit configuration.
 
@@ -417,4 +449,3 @@ Do not log raw audio or full transcript unless diagnostic capture is explicitly 
 - ONNX Runtime macOS build guidance: https://onnxruntime.ai/docs/build/inferencing.html
 - Ollama API documentation: https://docs.ollama.com/api
 - Apple local network privacy guidance: https://developer.apple.com/videos/play/wwdc2020/10110/
-

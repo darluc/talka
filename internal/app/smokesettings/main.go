@@ -124,6 +124,7 @@ func smokeConfig(extraASRModel string) (config.Config, string, error) {
 	for _, dir := range []string{
 		"runtime",
 		"models/funasr/paraformer-zh-onnx",
+		"models/funasr/paraformer-zh-online-onnx",
 		"models/funasr/fsmn-vad-onnx",
 		"models/funasr/ct-punc-onnx",
 		"models/funasr/itn-zh",
@@ -140,6 +141,7 @@ func smokeConfig(extraASRModel string) (config.Config, string, error) {
 	cfg := config.Default()
 	cfg.ASR.RuntimePath = "runtime"
 	cfg.ASR.Models.ASR = "models/funasr/paraformer-zh-onnx"
+	cfg.ASR.Models.Online = "models/funasr/paraformer-zh-online-onnx"
 	cfg.ASR.Models.VAD = "models/funasr/fsmn-vad-onnx"
 	cfg.ASR.Models.Punc = "models/funasr/ct-punc-onnx"
 	cfg.ASR.Models.ITN = "models/funasr/itn-zh"

@@ -229,9 +229,8 @@ func decryptIOSAudioMessages(machine *session.StateMachine, messages []session.E
 			if typed.StreamID != streamID {
 				return protocol.AudioMetadata{}, nil, fmt.Errorf("audio stop stream id mismatch")
 			}
-			if typed.LastSequence != len(frames) {
-				return protocol.AudioMetadata{}, nil, fmt.Errorf("last sequence = %d, want %d", typed.LastSequence, len(frames))
-			}
+			// Stop can race with an in-flight tail frame on the iOS websocket.
+			// Per-frame sequence numbers remain strict; the stop count is advisory.
 			stopped = true
 		default:
 			return protocol.AudioMetadata{}, nil, fmt.Errorf("unexpected message type %T", decoded)

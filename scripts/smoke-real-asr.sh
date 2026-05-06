@@ -7,6 +7,7 @@ addr="${TALKA_REAL_ASR_ADDR:-127.0.0.1:${default_port}}"
 url="ws://${addr}/ws"
 upstream_url="${TALKA_FUNASR_UPSTREAM_URL:-ws://127.0.0.1:10095}"
 model_asr="${TALKA_FUNASR_MODEL_ASR:-models/funasr/paraformer-zh-onnx}"
+model_online="${TALKA_FUNASR_MODEL_ONLINE:-models/funasr/paraformer-zh-online-onnx}"
 model_vad="${TALKA_FUNASR_MODEL_VAD:-models/funasr/fsmn-vad-onnx}"
 model_punc="${TALKA_FUNASR_MODEL_PUNC:-models/funasr/ct-punc-onnx}"
 model_itn="${TALKA_FUNASR_MODEL_ITN:-models/funasr/itn-zh}"
@@ -44,7 +45,7 @@ if [ ! -f "$fixture" ]; then
 fi
 
 if [ "$crash_midstream" -eq 0 ]; then
-  for path in "$model_asr" "$model_vad" "$model_punc" "$model_itn"; do
+  for path in "$model_asr" "$model_online" "$model_vad" "$model_punc" "$model_itn"; do
     if [ ! -d "$path" ]; then
       printf 'missing FunASR model path: %s. Download or point TALKA_FUNASR_MODEL_* at local ONNX model directories before running this smoke test.\n' "$path" >&2
       exit 1

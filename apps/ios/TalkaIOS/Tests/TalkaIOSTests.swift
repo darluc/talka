@@ -311,7 +311,7 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertFalse(body.contains("audioWebSocketURL"), body)
     }
 
-    func testStopRecordingStopsCaptureAndSendsLastSequence() async {
+    func testStopRecordingStopsCaptureAndSendsStop() async {
         let streamClient = RecordingAudioStreamClient()
         let microphoneSource = FakeMicrophoneSource()
         let viewModel = RemoteMicShellViewModel(
@@ -329,12 +329,94 @@ final class TalkaIOSTests: XCTestCase {
 
         XCTAssertTrue(microphoneSource.didStart)
         XCTAssertTrue(microphoneSource.didStop)
-        XCTAssertEqual(streamClient.events, [
+        XCTAssertEqual(Array(streamClient.events.prefix(2)), [
             .start(.talkaDefault),
-            .frame(sequence: 1, byteCount: TalkaAudioFormat.frameByteCount),
-            .stop(lastSequence: 1)
+            .frame(sequence: 1, byteCount: TalkaAudioFormat.frameByteCount)
         ])
+        XCTAssertEqual(streamClient.events.count, 3)
+        guard case .stop = streamClient.events[2] else {
+            XCTFail("events[2] = \(streamClient.events[2]), want stop")
+            return
+        }
         XCTAssertEqual(viewModel.recordingState, .idle)
+    }
+
+    func testLatePCMFrameAfterStopDoesNotFlipSuccessfulRecordingIntoFailure() async {
+        let streamClient = BlockingStopAudioStreamClient()
+        let microphoneSource = FakeMicrophoneSource()
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(),
+            identityStore: FakePairedIdentityStore(),
+            audioStreamClient: streamClient,
+            microphoneSource: microphoneSource
+        )
+
+        await viewModel.startRecording()
+        microphoneSource.emit(Data(repeating: 3, count: TalkaAudioFormat.frameByteCount))
+        await Task.yield()
+
+        let stopTask = Task { @MainActor in
+            await viewModel.stopRecording()
+        }
+
+        while !streamClient.stopStarted {
+            await Task.yield()
+        }
+
+        microphoneSource.emit(Data(repeating: 4, count: TalkaAudioFormat.frameByteCount))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertFalse(streamClient.lateFrameAttempted)
+        streamClient.finishStop()
+        await stopTask.value
+
+        XCTAssertEqual(Array(streamClient.events.prefix(2)), [
+            .start(.talkaDefault),
+            .frame(sequence: 1, byteCount: TalkaAudioFormat.frameByteCount)
+        ])
+        XCTAssertEqual(streamClient.events.count, 3)
+        guard case .stop = streamClient.events[2] else {
+            XCTFail("events[2] = \(streamClient.events[2]), want stop")
+            return
+        }
+        XCTAssertEqual(viewModel.recordingState, .idle)
+        XCTAssertNil(viewModel.lastErrorMessage)
+    }
+
+    func testInFlightAudioFrameFailureAfterStopDoesNotFlipSuccessfulRecordingIntoFailure() async {
+        let streamClient = BlockingFrameAudioStreamClient()
+        let microphoneSource = FakeMicrophoneSource()
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(),
+            identityStore: FakePairedIdentityStore(),
+            audioStreamClient: streamClient,
+            microphoneSource: microphoneSource
+        )
+
+        await viewModel.startRecording()
+        microphoneSource.emit(Data(repeating: 3, count: TalkaAudioFormat.frameByteCount))
+
+        while !streamClient.frameStarted {
+            await Task.yield()
+        }
+
+        let stopTask = Task { @MainActor in
+            await viewModel.stopRecording()
+        }
+
+        while !streamClient.stopStarted {
+            await Task.yield()
+        }
+
+        streamClient.failBlockedFrameAfterStop()
+        await stopTask.value
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(streamClient.stopLastSequence, 0)
+        XCTAssertEqual(viewModel.recordingState, .idle)
+        XCTAssertNil(viewModel.lastErrorMessage)
+        XCTAssertNil(viewModel.lastAudioDiagnostic)
     }
 
     func testProductionEnvironmentUsesBonjourDiscoveryAndSecureTransportDefaults() {
@@ -440,17 +522,45 @@ final class TalkaIOSTests: XCTestCase {
         do {
             try await client.sendAudioStop(lastSequence: 0)
             XCTFail("sendAudioStop(lastSequence:) error = nil, want server error")
-        } catch let error as RemoteMicFlowError {
+        } catch let error as RemoteMicDetailedError {
+            XCTAssertEqual(error.code, "accessibility_missing")
             XCTAssertEqual(
-                error,
-                .recordingFailed("Talka needs Accessibility or Automation permission before it can paste into other apps.")
+                error.userMessage,
+                "Talka needs Accessibility or Automation permission before it can paste into other apps."
             )
         } catch {
-            XCTFail("sendAudioStop(lastSequence:) error = \(error), want RemoteMicFlowError")
+            XCTFail("sendAudioStop(lastSequence:) error = \(error), want RemoteMicDetailedError")
         }
 
         XCTAssertEqual(task.receiveCalls, 1)
         XCTAssertEqual(task.cancelCalls, 1)
+    }
+
+    func testSecureAudioStreamClientPreservesServerDiagnosticOnAudioStopError() async throws {
+        let sessionStore = SecureAudioSessionStore()
+        sessionStore.save(makeSecureAudioSession(id: "session-a", url: "ws://127.0.0.1/session-a"))
+        let connector = RecordingSecureAudioWebSocketConnector()
+        let client = SecureAudioStreamClient(
+            sessionStore: sessionStore,
+            webSocketConnector: connector
+        )
+
+        try await client.sendAudioStart(metadata: .talkaDefault)
+        let task = try XCTUnwrap(connector.createdTasks.first)
+        task.queuedReceiveResults = [.success(#"{"ok":false,"error":{"code":"asr_runtime_unavailable","message":"The Mac ASR runtime could not start.","diagnostic":"missing language model bundle: /Applications/TalkaMac.app/Contents/Resources/models/funasr/speech_ngram_lm_zh-cn-ai-wesp-fst/TLG.fst"}}"#)]
+
+        do {
+            try await client.sendAudioStop(lastSequence: 0)
+            XCTFail("sendAudioStop(lastSequence:) error = nil, want server error")
+        } catch let error as RemoteMicDetailedError {
+            XCTAssertEqual(error.userMessage, "The Mac ASR runtime could not start.")
+            XCTAssertEqual(
+                error.diagnostic,
+                "missing language model bundle: /Applications/TalkaMac.app/Contents/Resources/models/funasr/speech_ngram_lm_zh-cn-ai-wesp-fst/TLG.fst"
+            )
+        } catch {
+            XCTFail("sendAudioStop(lastSequence:) error = \(error), want RemoteMicDetailedError")
+        }
     }
 
     func testProductionEnvironmentDoesNotStartBonjourBrowsingDuringCreation() {
@@ -874,6 +984,76 @@ private final class FakePairedIdentityStore: PairedIdentityStoring {
 
         func sendAudioCancel(reason: String) async throws {
             _ = reason
+        }
+    }
+
+    private final class BlockingStopAudioStreamClient: AudioStreamClient {
+        private(set) var events: [AudioStreamEvent] = []
+        private(set) var stopStarted = false
+        private(set) var lateFrameAttempted = false
+        private var stopContinuation: CheckedContinuation<Void, Never>?
+
+        func sendAudioStart(metadata: AudioStreamMetadata) async throws {
+            events.append(.start(metadata))
+        }
+
+        func sendAudioFrame(sequence: Int, payload: Data) async throws {
+            if stopStarted {
+                lateFrameAttempted = true
+                throw RemoteMicFlowError.recordingFailed("audio session could not be processed")
+            }
+            events.append(.frame(sequence: sequence, byteCount: payload.count))
+        }
+
+        func sendAudioStop(lastSequence: Int) async throws {
+            events.append(.stop(lastSequence: lastSequence))
+            stopStarted = true
+            await withCheckedContinuation { continuation in
+                stopContinuation = continuation
+            }
+        }
+
+        func sendAudioCancel(reason: String) async throws {
+            _ = reason
+        }
+
+        func finishStop() {
+            stopContinuation?.resume()
+            stopContinuation = nil
+        }
+    }
+
+    private final class BlockingFrameAudioStreamClient: AudioStreamClient {
+        private(set) var frameStarted = false
+        private(set) var stopStarted = false
+        private(set) var stopLastSequence: Int?
+        private var frameContinuation: CheckedContinuation<Void, Error>?
+
+        func sendAudioStart(metadata: AudioStreamMetadata) async throws {
+            _ = metadata
+        }
+
+        func sendAudioFrame(sequence: Int, payload: Data) async throws {
+            _ = sequence
+            _ = payload
+            frameStarted = true
+            try await withCheckedThrowingContinuation { continuation in
+                frameContinuation = continuation
+            }
+        }
+
+        func sendAudioStop(lastSequence: Int) async throws {
+            stopLastSequence = lastSequence
+            stopStarted = true
+        }
+
+        func sendAudioCancel(reason: String) async throws {
+            _ = reason
+        }
+
+        func failBlockedFrameAfterStop() {
+            frameContinuation?.resume(throwing: RemoteMicFlowError.recordingFailed("audio session could not be processed"))
+            frameContinuation = nil
         }
     }
 

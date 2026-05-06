@@ -55,7 +55,7 @@ else
   missing=1
 fi
 
-for dir in models/funasr/paraformer-zh-onnx models/funasr/fsmn-vad-onnx models/funasr/ct-punc-onnx models/funasr/itn-zh .sisyphus/evidence; do
+for dir in models/funasr/paraformer-zh-onnx models/funasr/paraformer-zh-online-onnx models/funasr/fsmn-vad-onnx models/funasr/ct-punc-onnx models/funasr/itn-zh .sisyphus/evidence; do
   if [ -d "$dir" ]; then
     printf '[ok] expected directory: %s\n' "$dir"
   else

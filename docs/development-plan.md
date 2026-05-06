@@ -5,7 +5,7 @@
 - Build the smallest complete local-first loop first: iOS audio to Mac, ASR, Ollama cleanup, text insertion.
 - Validate risky native dependencies before polishing UI.
 - Keep ASR, LLM, transport, and text injection behind interfaces.
-- Prefer process isolation for FunASR C++/ONNX Runtime.
+- Prefer an embedded, app-bundled FunASR runtime in the default path, while keeping external runtime and legacy sidecar support behind the same ASR interface.
 - Keep debug data private by default.
 
 ## Milestone 0: Technical Spike
@@ -55,24 +55,28 @@ Acceptance:
 - Config can be loaded from a user config file.
 - Unit tests cover config defaults and validation.
 
-## Milestone 2: ASR Sidecar Integration
+## Milestone 2: ASR Runtime Integration
 
-Goal: connect Go to FunASR C++/ONNX Runtime.
+Goal: connect Go to FunASR C++/ONNX Runtime across embedded and external modes.
 
 Tasks:
 
-- Add ASR runtime process manager.
-- Add health check for the sidecar.
+- Add embedded ASR runtime process manager.
+- Add direct websocket client for external FunASR runtimes.
+- Keep legacy Talka sidecar compatibility behind a separate provider.
+- Add health checks for embedded and external runtime modes.
 - Add local WebSocket or Unix socket ASR client.
 - Implement phrase-level transcription request path.
 - Implement streaming session path if FunASR runtime supports it cleanly.
 - Normalize ASR responses into Talka transcript segments.
 - Add runtime restart policy.
+- Ensure the macOS shell only generates embedded defaults on first launch and preserves saved external or sidecar config on later launches.
 
 Acceptance:
 
-- Go can start and stop ASR runtime.
-- Go can send audio and receive final ASR text.
+- Go can start and stop the embedded ASR runtime.
+- Go can connect directly to an external FunASR runtime.
+- Go can send audio and receive final ASR text in both modes.
 - ASR runtime failure is detected and surfaced.
 - Missing model paths produce actionable errors.
 
@@ -211,7 +215,7 @@ Tasks:
 
 - Add macOS settings window.
 - Configure Ollama URL and model.
-- Configure ASR runtime and model paths.
+- Configure ASR provider mode, runtime path, host, and model paths.
 - Show ASR runtime health.
 - Show paired devices.
 - Allow forgetting a paired device.
@@ -257,12 +261,12 @@ Tasks:
 - Add prompt regression tests for Ollama cleanup.
 - Add reconnection stress tests.
 - Add long-session memory checks.
-- Add crash recovery tests for ASR sidecar.
+- Add crash recovery tests for the embedded ASR runtime.
 
 Acceptance:
 
 - Typical short dictation returns final text quickly enough for daily use.
-- ASR sidecar restarts without requiring app relaunch.
+- The embedded ASR runtime restarts without requiring app relaunch.
 - Text cleanup does not over-edit in regression fixtures.
 - Long sessions do not leak memory excessively.
 
@@ -299,4 +303,3 @@ Focus only on the native runtime and local Mac loop:
 5. Paste cleaned text into the focused app.
 
 This produces a Mac-only proof of the core value before adding iOS discovery, pairing, and streaming.
-

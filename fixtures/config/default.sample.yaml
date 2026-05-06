@@ -4,14 +4,16 @@ server:
   service_name: Talka
 
 asr:
-  provider: funasr_onnx
-  runtime_path: runtime
+  provider: funasr_embedded
+  runtime_path: talka-asr-runtime
   host: 127.0.0.1
   port: 10095
-  mode: twopass
+  mode: 2pass
   sample_rate: 16000
+  startup_timeout_seconds: 30
   models:
     asr: models/funasr/paraformer-zh-onnx
+    online: models/funasr/paraformer-zh-online-onnx
     vad: models/funasr/fsmn-vad-onnx
     punc: models/funasr/ct-punc-onnx
     itn: models/funasr/itn-zh

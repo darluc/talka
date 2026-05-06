@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"talka/internal/asr"
 )
 
 func TestIOSAudioWebSocketReturnsSanitizedDecodeError(t *testing.T) {
@@ -45,6 +48,45 @@ func TestIOSAudioWebSocketReturnsSanitizedDecodeError(t *testing.T) {
 	}
 	if strings.Contains(response.Error.Message, "invalid character") || strings.Contains(string(payload), "invalid character") {
 		t.Fatalf("websocket response leaked raw decode error: %s", string(payload))
+	}
+}
+
+func TestIOSWebSocketErrorCodeReturnsSpecificASRFailure(t *testing.T) {
+	err := asr.NewRuntimeErrorWithDiagnostic(
+		asr.ErrorCodeRuntimeUnavailable,
+		"embedded FunASR runtime startup failed",
+		"missing language model bundle: /Applications/TalkaMac.app/Contents/Resources/models/funasr/speech_ngram_lm_zh-cn-ai-wesp-fst/TLG.fst",
+		errors.New("embedded runtime aborted"),
+	)
+
+	response := iosWebSocketErrorCode(err, "process")
+
+	if response.Code != "asr_runtime_unavailable" {
+		t.Fatalf("Code = %q, want asr_runtime_unavailable", response.Code)
+	}
+	if response.Message == "audio session could not be processed" {
+		t.Fatalf("Message = %q, want specific ASR guidance", response.Message)
+	}
+	if !strings.Contains(response.Message, "ASR") && !strings.Contains(response.Message, "language model") {
+		t.Fatalf("Message = %q, want ASR-specific context", response.Message)
+	}
+}
+
+func TestIOSWebSocketErrorCodeReturnsSpecificASRStartupTimeoutFailure(t *testing.T) {
+	err := asr.NewRuntimeErrorWithDiagnostic(
+		asr.ErrorCodeRuntimeStartupFailed,
+		"embedded FunASR runtime could not start",
+		"runtime did not become healthy within 5s",
+		errors.New("context deadline exceeded"),
+	)
+
+	response := iosWebSocketErrorCode(err, "process")
+
+	if response.Code != "asr_runtime_startup_failed" {
+		t.Fatalf("Code = %q, want asr_runtime_startup_failed", response.Code)
+	}
+	if got, want := response.Message, "The Mac ASR runtime took too long to become ready."; got != want {
+		t.Fatalf("Message = %q, want %q", got, want)
 	}
 }
 

@@ -1,17 +1,21 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	crand "crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -49,8 +53,8 @@ func TestStatusEndpointReturnsTypedJSON(t *testing.T) {
 	if payload.DeviceCount != 0 {
 		t.Fatalf("DeviceCount = %d, want 0", payload.DeviceCount)
 	}
-	if payload.ASR.Provider != "funasr_onnx" || payload.ASR.SampleRate != 16000 {
-		t.Fatalf("ASR status = %+v, want provider funasr_onnx and sample_rate 16000", payload.ASR)
+	if payload.ASR.Provider != "funasr_embedded" || payload.ASR.SampleRate != 16000 {
+		t.Fatalf("ASR status = %+v, want provider funasr_embedded and sample_rate 16000", payload.ASR)
 	}
 	if payload.Ollama.BaseURL != "http://localhost:11434" || payload.Ollama.Model != "qwen3:8b" {
 		t.Fatalf("Ollama status = %+v, want default endpoint/model", payload.Ollama)
@@ -181,7 +185,7 @@ func TestAccessibilityOpenReturnsActionableGuidance(t *testing.T) {
 func TestConfigEndpointRejectsInvalidConfig(t *testing.T) {
 	server := newWritableTestServer(t)
 
-	bad := `{"asr":{"runtime_path":"runtime","port":10095,"models":{"asr":"models/asr","vad":"models/missing","punc":"models/punc","itn":"models/itn"}}}`
+	bad := `{"asr":{"provider":"funasr_embedded","runtime_path":"talka-asr-runtime","port":10095,"models":{"asr":"models/funasr/paraformer-zh-onnx","vad":"models/funasr/fsmn-vad-onnx","punc":"models/funasr/ct-punc-onnx","itn":"models/funasr/itn-zh"}}}`
 	resp := mustPut(t, server.URL+"/v1/config", strings.NewReader(bad))
 	defer resp.Body.Close()
 
@@ -355,6 +359,30 @@ func TestIOSWebSocketErrorCodePropagatesInjectionFailures(t *testing.T) {
 	}
 }
 
+func TestDecryptIOSAudioMessagesTreatsStopLastSequenceAsAdvisory(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		lastSequence int
+	}{
+		{name: "below received frame count", lastSequence: 1},
+		{name: "above received frame count", lastSequence: 3},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sessionID := "session-" + strings.ReplaceAll(tt.name, " ", "-")
+			machine := mustLoopbackAudioSession(t, sessionID)
+			messages := encryptTestAudioMessagesWithStopSequence(t, machine, sessionID, tt.lastSequence)
+
+			_, frames, err := decryptIOSAudioMessages(machine, messages)
+			if err != nil {
+				t.Fatalf("decryptIOSAudioMessages() error = %v", err)
+			}
+			if len(frames) != 2 {
+				t.Fatalf("len(frames) = %d, want 2", len(frames))
+			}
+		})
+	}
+}
+
 func TestProcessEncryptedIOSAudioSessionDoesNotWaitForTextInsertion(t *testing.T) {
 	cfg, cfgPath := mustConfig(t)
 	runtime := &asr.FakeRuntime{Ready: true}
@@ -441,6 +469,66 @@ func TestQueueIOSFinalTextInsertionRunsInjectorInBackground(t *testing.T) {
 	}
 }
 
+func TestIOSAudioWebSocketReturnsJSONBeforeCloseFrame(t *testing.T) {
+	cfg, cfgPath := mustConfig(t)
+	runtime := &asr.FakeRuntime{Ready: true}
+	runtimeServer := httptest.NewServer(runtime.Handler())
+	defer runtimeServer.Close()
+
+	injector := newBlockingTestInjector()
+	defer close(injector.release)
+	service, err := NewWithPipeline(cfg, cfgPath, nil, NewPipeline(
+		asr.NewSidecarProvider(asr.Config{URL: "ws" + strings.TrimPrefix(runtimeServer.URL, "http") + "/ws", Version: protocol.VersionV1Alpha1, Timeout: 2 * time.Second}),
+		llm.NewFakeProvider(llm.FakeConfig{}),
+		injector,
+	))
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
+	}
+	server := httptest.NewServer(service.Handler())
+	defer server.Close()
+
+	start, challenge, paired, clientIdentity, clientEphemeral := pairHTTPClientWithKeys(t, server.URL)
+	clientSession := mustAppClientSession(t, intcrypto.FlowPairing, challenge.PairingID, paired, clientIdentity, clientEphemeral, start.PIN)
+	messages := encryptTestAudioMessages(t, clientSession, paired.SessionID)
+
+	conn, reader := mustOpenIOSAudioWebSocket(t, server.URL, "iphone-1")
+	defer conn.Close()
+	for _, message := range messages {
+		payload := marshalIOSAudioWireMessage(t, message)
+		if err := writeMaskedWebSocketFrame(conn, 0x1, payload); err != nil {
+			t.Fatalf("writeMaskedWebSocketFrame() error = %v", err)
+		}
+	}
+
+	responsePayload, opcode, err := readServerWebSocketFrame(reader)
+	if err != nil {
+		t.Fatalf("readServerWebSocketFrame(response) error = %v", err)
+	}
+	if opcode != 0x1 {
+		t.Fatalf("response opcode = %#x, want text frame", opcode)
+	}
+
+	var response iosAudioWebSocketResponse
+	if err := json.Unmarshal(responsePayload, &response); err != nil {
+		t.Fatalf("Unmarshal(response) error = %v", err)
+	}
+	if !response.OK {
+		t.Fatalf("response.OK = false, want true; response = %+v", response)
+	}
+	if got, want := response.FinalText, "你好，世界"; got != want {
+		t.Fatalf("FinalText = %q, want %q", got, want)
+	}
+
+	_, closeOpcode, err := readServerWebSocketFrame(reader)
+	if err != nil {
+		t.Fatalf("readServerWebSocketFrame(close) error = %v", err)
+	}
+	if closeOpcode != 0x8 {
+		t.Fatalf("close opcode = %#x, want close frame", closeOpcode)
+	}
+}
+
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	useFakeIOSPairingStore(t)
@@ -463,13 +551,16 @@ func TestNewConfiguresProductionPipeline(t *testing.T) {
 	}
 }
 
-func TestASRRuntimeArgsStartManagedRuntimeOnConfiguredAddress(t *testing.T) {
+func TestMustConfigUsesEmbeddedProvider(t *testing.T) {
 	cfg, _ := mustConfig(t)
-	args := asrRuntimeArgsFromConfig(cfg.ASR)
-
-	want := []string{"serve", "--addr", "127.0.0.1:10095", "--mode", "twopass"}
-	if !reflect.DeepEqual(args, want) {
-		t.Fatalf("asrRuntimeArgsFromConfig() = %#v, want %#v", args, want)
+	if cfg.ASR.Provider != "funasr_embedded" {
+		t.Fatalf("ASR.Provider = %q, want funasr_embedded", cfg.ASR.Provider)
+	}
+	if cfg.ASR.RuntimePath == "" {
+		t.Fatal("ASR.RuntimePath is empty")
+	}
+	if cfg.ASR.Models.Online == "" {
+		t.Fatal("ASR.Models.Online is empty")
 	}
 }
 
@@ -494,11 +585,24 @@ func useFakeIOSPairingStore(t *testing.T) {
 func mustConfig(t *testing.T) (config.Config, string) {
 	t.Helper()
 	root := t.TempDir()
-	mustMkdir(t, root, "runtime")
-	mustMkdir(t, root, "models/asr")
-	mustMkdir(t, root, "models/vad")
-	mustMkdir(t, root, "models/punc")
-	mustMkdir(t, root, "models/itn")
+	if err := os.MkdirAll(filepath.Join(root, "models/funasr/paraformer-zh-onnx"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(asr) error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "models/funasr/paraformer-zh-online-onnx"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(online) error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "models/funasr/fsmn-vad-onnx"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(vad) error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "models/funasr/ct-punc-onnx"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(punc) error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "models/funasr/itn-zh"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(itn) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "talka-asr-runtime"), []byte("runtime"), 0o755); err != nil {
+		t.Fatalf("WriteFile(runtime) error = %v", err)
+	}
 
 	path := filepath.Join(root, "config.yaml")
 	contents := []byte(`server:
@@ -506,17 +610,18 @@ func mustConfig(t *testing.T) (config.Config, string) {
   port: 0
   service_name: Talka
 asr:
-  provider: funasr_onnx
-  runtime_path: runtime
+  provider: funasr_embedded
+  runtime_path: talka-asr-runtime
   host: 127.0.0.1
   port: 10095
-  mode: twopass
+  mode: 2pass
   sample_rate: 16000
   models:
-    asr: models/asr
-    vad: models/vad
-    punc: models/punc
-    itn: models/itn
+    asr: models/funasr/paraformer-zh-onnx
+    online: models/funasr/paraformer-zh-online-onnx
+    vad: models/funasr/fsmn-vad-onnx
+    punc: models/funasr/ct-punc-onnx
+    itn: models/funasr/itn-zh
 llm:
   provider: ollama
   base_url: http://localhost:11434
@@ -670,6 +775,12 @@ func mustAppClientSession(t *testing.T, flow intcrypto.Flow, pairingID string, r
 
 func pairHTTPClient(t *testing.T, baseURL string) (PairingStartResponse, iosPairingTestResponse, intcrypto.KeyPair) {
 	t.Helper()
+	start, _, paired, clientIdentity, _ := pairHTTPClientWithKeys(t, baseURL)
+	return start, paired, clientIdentity
+}
+
+func pairHTTPClientWithKeys(t *testing.T, baseURL string) (PairingStartResponse, iosPairingChallengeTestResponse, iosPairingTestResponse, intcrypto.KeyPair, intcrypto.KeyPair) {
+	t.Helper()
 	startResp := mustPost(t, baseURL+"/v1/pairing/start", nil)
 	var start PairingStartResponse
 	decodeJSON(t, startResp, &start)
@@ -684,10 +795,15 @@ func pairHTTPClient(t *testing.T, baseURL string) (PairingStartResponse, iosPair
 	defer pairResp.Body.Close()
 	var paired iosPairingTestResponse
 	decodeJSON(t, pairResp, &paired)
-	return start, paired, clientIdentity
+	return start, challenge, paired, clientIdentity, clientEphemeral
 }
 
 func encryptTestAudioMessages(t *testing.T, machine *session.StateMachine, sessionID string) []session.EncryptedMessage {
+	t.Helper()
+	return encryptTestAudioMessagesWithStopSequence(t, machine, sessionID, 2)
+}
+
+func encryptTestAudioMessagesWithStopSequence(t *testing.T, machine *session.StateMachine, sessionID string, lastSequence int) []session.EncryptedMessage {
 	t.Helper()
 	streamID := "stream-1"
 	frames := [][]byte{bytes.Repeat([]byte{1}, asr.DefaultFrameSize), bytes.Repeat([]byte{2}, asr.DefaultFrameSize)}
@@ -698,7 +814,7 @@ func encryptTestAudioMessages(t *testing.T, machine *session.StateMachine, sessi
 		{messageType: protocol.MessageTypeAudioStart, payload: protocol.AudioStart{Envelope: protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeAudioStart}, SessionID: sessionID, StreamID: streamID, Metadata: asr.DefaultAudioMetadata()}},
 		{messageType: protocol.MessageTypeAudioFrame, payload: protocol.AudioFrame{Envelope: protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeAudioFrame}, SessionID: sessionID, StreamID: streamID, Sequence: 1, PayloadBase64: base64.StdEncoding.EncodeToString(frames[0])}},
 		{messageType: protocol.MessageTypeAudioFrame, payload: protocol.AudioFrame{Envelope: protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeAudioFrame}, SessionID: sessionID, StreamID: streamID, Sequence: 2, PayloadBase64: base64.StdEncoding.EncodeToString(frames[1])}},
-		{messageType: protocol.MessageTypeAudioStop, payload: protocol.AudioStop{Envelope: protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeAudioStop}, SessionID: sessionID, StreamID: streamID, LastSequence: len(frames)}},
+		{messageType: protocol.MessageTypeAudioStop, payload: protocol.AudioStop{Envelope: protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeAudioStop}, SessionID: sessionID, StreamID: streamID, LastSequence: lastSequence}},
 	}
 	messages := make([]session.EncryptedMessage, 0, len(payloads))
 	for _, item := range payloads {
@@ -713,6 +829,136 @@ func encryptTestAudioMessages(t *testing.T, machine *session.StateMachine, sessi
 		messages = append(messages, message)
 	}
 	return messages
+}
+
+func mustLoopbackAudioSession(t *testing.T, sessionID string) *session.StateMachine {
+	t.Helper()
+	key := bytes.Repeat([]byte{42}, 32)
+	machine, err := session.NewStateMachine(session.Config{
+		SessionID:         []byte(sessionID),
+		SendKey:           key,
+		ReceiveKey:        key,
+		InactivityTimeout: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewStateMachine() error = %v", err)
+	}
+	return machine
+}
+
+func mustOpenIOSAudioWebSocket(t *testing.T, baseURL, deviceID string) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		t.Fatalf("url.Parse(%q) error = %v", baseURL, err)
+	}
+	conn, err := net.Dial("tcp", parsed.Host)
+	if err != nil {
+		t.Fatalf("net.Dial(%q) error = %v", parsed.Host, err)
+	}
+
+	keyBytes := make([]byte, 16)
+	if _, err := crand.Read(keyBytes); err != nil {
+		conn.Close()
+		t.Fatalf("rand.Read(keyBytes) error = %v", err)
+	}
+	request := "GET /v1/session/audio?device_id=" + deviceID + " HTTP/1.1\r\n" +
+		"Host: " + parsed.Host + "\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Sec-WebSocket-Version: 13\r\n" +
+		"Sec-WebSocket-Key: " + base64.StdEncoding.EncodeToString(keyBytes) + "\r\n\r\n"
+	if _, err := conn.Write([]byte(request)); err != nil {
+		conn.Close()
+		t.Fatalf("conn.Write(handshake) error = %v", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		conn.Close()
+		t.Fatalf("http.ReadResponse() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		conn.Close()
+		t.Fatalf("StatusCode = %d, body = %s, want 101", resp.StatusCode, string(body))
+	}
+	resp.Body.Close()
+	return conn, reader
+}
+
+func marshalIOSAudioWireMessage(t *testing.T, message session.EncryptedMessage) []byte {
+	t.Helper()
+	payload, err := json.Marshal(iosAudioWireMessage{
+		Version:    message.Version,
+		SessionID:  base64.StdEncoding.EncodeToString(message.SessionID),
+		Seq:        message.Seq,
+		Type:       message.Type,
+		Nonce:      base64.StdEncoding.EncodeToString(message.Nonce),
+		Ciphertext: base64.StdEncoding.EncodeToString(message.Ciphertext),
+		Tag:        base64.StdEncoding.EncodeToString(message.Tag),
+	})
+	if err != nil {
+		t.Fatalf("Marshal(iosAudioWireMessage) error = %v", err)
+	}
+	return payload
+}
+
+func writeMaskedWebSocketFrame(conn net.Conn, opcode byte, payload []byte) error {
+	frame := []byte{0x80 | opcode}
+	switch {
+	case len(payload) < 126:
+		frame = append(frame, 0x80|byte(len(payload)))
+	case len(payload) <= 65535:
+		frame = append(frame, 0x80|126, byte(len(payload)>>8), byte(len(payload)))
+	default:
+		return fmt.Errorf("payload too large: %d", len(payload))
+	}
+
+	mask := make([]byte, 4)
+	if _, err := crand.Read(mask); err != nil {
+		return err
+	}
+	frame = append(frame, mask...)
+	masked := make([]byte, len(payload))
+	for index := range payload {
+		masked[index] = payload[index] ^ mask[index%4]
+	}
+	frame = append(frame, masked...)
+	_, err := conn.Write(frame)
+	return err
+}
+
+func readServerWebSocketFrame(reader *bufio.Reader) ([]byte, byte, error) {
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(reader, header); err != nil {
+		return nil, 0, err
+	}
+	opcode := header[0] & 0x0f
+	length := uint64(header[1] & 0x7f)
+	if header[1]&0x80 != 0 {
+		return nil, 0, fmt.Errorf("server frame must not be masked")
+	}
+	if length == 126 {
+		var extended [2]byte
+		if _, err := io.ReadFull(reader, extended[:]); err != nil {
+			return nil, 0, err
+		}
+		length = uint64(binary.BigEndian.Uint16(extended[:]))
+	} else if length == 127 {
+		var extended [8]byte
+		if _, err := io.ReadFull(reader, extended[:]); err != nil {
+			return nil, 0, err
+		}
+		length = binary.BigEndian.Uint64(extended[:])
+	}
+	payload := make([]byte, length)
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return nil, 0, err
+	}
+	return payload, opcode, nil
 }
 
 func marshalJSONReader(t *testing.T, value any) *strings.Reader {

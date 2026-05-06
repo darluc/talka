@@ -9,14 +9,13 @@ protocol RuntimeConfigGenerator {
 @MainActor
 final class ServerProcessManager: ObservableObject {
     enum PortReuseAction: Equatable {
-        case reuseExistingServer(startProxy: Bool)
+        case reuseExistingServer
     }
 
     @Published var isRunning = false
     @Published var lastError: String?
 
     private var process: Process?
-    private var proxyProcess: Process?
     private let configGenerator: RuntimeConfigGenerator
     private let port: Int
     private var restartCount = 0
@@ -39,9 +38,6 @@ final class ServerProcessManager: ObservableObject {
             return
         }
 
-        // 1. Start the ASR proxy first (sidecar mode requires it)
-        guard startProxy() else { return }
-
         let configURL: URL
         do {
             configURL = try configGenerator.generateConfig()
@@ -57,39 +53,6 @@ final class ServerProcessManager: ObservableObject {
 
         restartCount = 0
         launch(executableURL: serverURL, configPath: configURL.path)
-    }
-
-    private func startProxy() -> Bool {
-        guard !isPortInUse(port: 19095) else { return true }
-
-        guard let proxyURL = locateProxy() else {
-            lastError = "ASR proxy executable not found in app bundle"
-            return false
-        }
-
-        let process = Process()
-        process.executableURL = proxyURL
-        process.arguments = ["serve", "--addr", "127.0.0.1:19095", "--upstream-url", "ws://127.0.0.1:10095", "--mode", "2pass"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            proxyProcess = process
-            return true
-        } catch {
-            lastError = "Failed to launch ASR proxy: \(error.localizedDescription)"
-            return false
-        }
-    }
-
-    private func locateProxy() -> URL? {
-        let bundleResources = Bundle.main.bundleURL
-            .appendingPathComponent("Contents/Resources/talka-asr-runtime")
-        if FileManager.default.isExecutableFile(atPath: bundleResources.path) {
-            return bundleResources
-        }
-        return nil
     }
 
     private func checkPortReuse() async {
@@ -110,18 +73,14 @@ final class ServerProcessManager: ObservableObject {
 
         guard let action = Self.portReuseAction(
             data: data,
-            response: httpResponse,
-            proxyPortInUse: isPortInUse(port: 19095)
+            response: httpResponse
         ) else {
             lastError = "Port \(port) is in use by another application"
             return
         }
 
         switch action {
-        case .reuseExistingServer(let shouldStartProxy):
-            if shouldStartProxy, !startProxy() {
-                return
-            }
+        case .reuseExistingServer:
             isRunning = true
         }
     }
@@ -135,19 +94,12 @@ final class ServerProcessManager: ObservableObject {
         if let process, process.isRunning {
             process.terminate()
         }
-        if let proxyProcess, proxyProcess.isRunning {
-            proxyProcess.terminate()
-        }
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
             if let self, let process = self.process, process.isRunning {
                 kill(process.processIdentifier, SIGKILL)
             }
-            if let self, let proxy = self.proxyProcess, proxy.isRunning {
-                kill(proxy.processIdentifier, SIGKILL)
-            }
             self?.process = nil
-            self?.proxyProcess = nil
             self?.isRunning = false
             self?.isTerminating = false
         }
@@ -240,7 +192,7 @@ final class ServerProcessManager: ObservableObject {
         return result == 0
     }
 
-    static func portReuseAction(data: Data, response: URLResponse, proxyPortInUse: Bool) -> PortReuseAction? {
+    static func portReuseAction(data: Data, response: URLResponse) -> PortReuseAction? {
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -249,6 +201,6 @@ final class ServerProcessManager: ObservableObject {
             return nil
         }
 
-        return .reuseExistingServer(startProxy: !proxyPortInUse)
+        return .reuseExistingServer
     }
 }

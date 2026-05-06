@@ -18,6 +18,28 @@ enum ShellWindowID {
     static let diagnostics = "diagnostics"
 }
 
+enum ASRProviderOption: String, CaseIterable, Identifiable {
+    case embedded = "funasr_embedded"
+    case external = "funasr_external"
+    case sidecar = "sidecar"
+    case container = "funasr_container"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .embedded:
+            return "Embedded Runtime"
+        case .external:
+            return "External FunASR"
+        case .sidecar:
+            return "Legacy Sidecar"
+        case .container:
+            return "Managed Docker"
+        }
+    }
+}
+
 enum ServiceDisplayState: String, Equatable {
     case listening
     case paired
@@ -267,13 +289,25 @@ struct ControlConfig: Equatable {
         path: "",
         server: ControlServerConfig(bindHost: "127.0.0.1", port: 8080, serviceName: "Talka"),
         asr: ControlASRConfig(
-            provider: "funasr_onnx",
-            runtimePath: "/Applications/Talka.app/Contents/Resources/talka-asr-runtime",
+            provider: "funasr_embedded",
+            runtimePath: "talka-asr-runtime",
             host: "127.0.0.1",
             port: 10095,
-            mode: "twopass",
+            mode: "2pass",
             sampleRate: 16_000,
-            models: ControlASRModelsConfig(asr: "models/funasr/paraformer-zh-onnx", vad: "models/funasr/fsmn-vad-onnx", punc: "models/funasr/ct-punc-onnx", itn: "models/funasr/itn-zh")
+            startupTimeoutSeconds: 30,
+            containerImage: "",
+            containerName: "",
+            downloadDir: "",
+            hotwordPath: "",
+            models: ControlASRModelsConfig(
+                asr: "models/funasr/paraformer-zh-onnx",
+                online: "models/funasr/paraformer-zh-online-onnx",
+                vad: "models/funasr/fsmn-vad-onnx",
+                punc: "models/funasr/ct-punc-onnx",
+                itn: "models/funasr/itn-zh",
+                lm: ""
+            )
         ),
         llm: ControlLLMConfig(provider: "ollama", baseURL: "http://localhost:11434", model: "qwen3:8b", timeoutSeconds: 30),
         injection: ControlInjectionConfig(mode: "clipboard_paste", restoreClipboard: true),
@@ -300,6 +334,11 @@ struct ControlASRConfig: Codable, Equatable {
     var port: Int
     var mode: String
     var sampleRate: Int
+    var startupTimeoutSeconds: Int
+    var containerImage: String
+    var containerName: String
+    var downloadDir: String
+    var hotwordPath: String
     var models: ControlASRModelsConfig
 
     enum CodingKeys: String, CodingKey {
@@ -309,15 +348,22 @@ struct ControlASRConfig: Codable, Equatable {
         case port
         case mode
         case sampleRate = "sample_rate"
+        case startupTimeoutSeconds = "startup_timeout_seconds"
+        case containerImage = "container_image"
+        case containerName = "container_name"
+        case downloadDir = "download_dir"
+        case hotwordPath = "hotword_path"
         case models
     }
 }
 
 struct ControlASRModelsConfig: Codable, Equatable {
     var asr: String
+    var online: String
     var vad: String
     var punc: String
     var itn: String
+    var lm: String
 }
 
 struct ControlLLMConfig: Codable, Equatable {
@@ -888,7 +934,7 @@ struct TalkaMacApp: App {
     @StateObject private var serverManager: ServerProcessManager
 
     init() {
-        let sm = ServerProcessManager(configGenerator: SidecarRuntimeConfigGenerator())
+        let sm = ServerProcessManager(configGenerator: EmbeddedRuntimeConfigGenerator())
         let vm = AppShellViewModel(client: LiveControlAPIClient())
         _serverManager = StateObject(wrappedValue: sm)
         _viewModel = StateObject(wrappedValue: vm)
@@ -1005,6 +1051,19 @@ struct SettingsShellView: View {
     @ObservedObject var viewModel: AppShellViewModel
     @Environment(\.openWindow) private var openWindow
 
+    private var isEmbeddedProvider: Bool {
+        let provider = viewModel.config.asr.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return provider == "funasr_embedded" || provider == "funasr_onnx"
+    }
+
+    private var isExternalProvider: Bool {
+        viewModel.config.asr.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "funasr_external"
+    }
+
+    private var isContainerProvider: Bool {
+        viewModel.config.asr.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "funasr_container"
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: ShellMetrics.panelSpacing) {
@@ -1012,11 +1071,55 @@ struct SettingsShellView: View {
 
                 GroupBox("Runtime") {
                     VStack(alignment: .leading, spacing: ShellMetrics.sectionSpacing) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("ASR Provider")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Picker("ASR Provider", selection: $viewModel.config.asr.provider) {
+                                ForEach(ASRProviderOption.allCases) { option in
+                                    Text(option.title).tag(option.rawValue)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                        }
                         LabeledField(title: "ASR Runtime Path", text: $viewModel.config.asr.runtimePath)
-                        LabeledField(title: "ASR Model", text: $viewModel.config.asr.models.asr)
-                        LabeledField(title: "VAD Model", text: $viewModel.config.asr.models.vad)
-                        LabeledField(title: "Punctuation Model", text: $viewModel.config.asr.models.punc)
-                        LabeledField(title: "ITN Model", text: $viewModel.config.asr.models.itn)
+                        LabeledField(title: "ASR Host", text: $viewModel.config.asr.host)
+                        LabeledField(
+                            title: "ASR Port",
+                            text: Binding(
+                                get: { String(viewModel.config.asr.port) },
+                                set: { viewModel.config.asr.port = Int($0) ?? viewModel.config.asr.port }
+                            )
+                        )
+                        LabeledField(title: "ASR Mode", text: $viewModel.config.asr.mode)
+                        if isEmbeddedProvider || isContainerProvider {
+                            LabeledField(
+                                title: "ASR Startup Timeout",
+                                text: Binding(
+                                    get: { String(viewModel.config.asr.startupTimeoutSeconds) },
+                                    set: { viewModel.config.asr.startupTimeoutSeconds = Int($0) ?? viewModel.config.asr.startupTimeoutSeconds }
+                                )
+                            )
+                        }
+                        if isEmbeddedProvider || isContainerProvider {
+                            LabeledField(title: "ASR Model", text: $viewModel.config.asr.models.asr)
+                            LabeledField(title: "ASR Online Model", text: $viewModel.config.asr.models.online)
+                            LabeledField(title: "VAD Model", text: $viewModel.config.asr.models.vad)
+                            LabeledField(title: "Punctuation Model", text: $viewModel.config.asr.models.punc)
+                            LabeledField(title: "ITN Model", text: $viewModel.config.asr.models.itn)
+                            LabeledField(title: "LM Model", text: $viewModel.config.asr.models.lm)
+                            LabeledField(title: "Hotword File", text: $viewModel.config.asr.hotwordPath)
+                        }
+                        if isContainerProvider {
+                            LabeledField(title: "ASR Container Image", text: $viewModel.config.asr.containerImage)
+                            LabeledField(title: "ASR Container Name", text: $viewModel.config.asr.containerName)
+                            LabeledField(title: "ASR Download Dir", text: $viewModel.config.asr.downloadDir)
+                        }
+                        if isExternalProvider {
+                            Text("External FunASR mode connects directly to the configured host and port.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         LabeledField(title: "Ollama Base URL", text: $viewModel.config.llm.baseURL)
                         LabeledField(title: "Ollama Model", text: $viewModel.config.llm.model)
                         LabeledField(title: "Insertion Mode", text: $viewModel.config.injection.mode)

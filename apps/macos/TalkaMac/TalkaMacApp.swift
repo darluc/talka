@@ -295,7 +295,7 @@ struct ControlConfig: Equatable {
             port: 10095,
             mode: "2pass",
             sampleRate: 16_000,
-            startupTimeoutSeconds: 30,
+            startupTimeoutSeconds: 180,
             containerImage: "",
             containerName: "",
             downloadDir: "",
@@ -928,8 +928,17 @@ final class AppShellViewModel: ObservableObject {
     }()
 }
 
+final class TalkaMacLifecycleDelegate: NSObject, NSApplicationDelegate {
+    static var terminateHandler: (() -> Void)?
+
+    func applicationWillTerminate(_ notification: Notification) {
+        Self.terminateHandler?()
+    }
+}
+
 @main
 struct TalkaMacApp: App {
+    @NSApplicationDelegateAdaptor(TalkaMacLifecycleDelegate.self) private var lifecycleDelegate
     @StateObject private var viewModel: AppShellViewModel
     @StateObject private var serverManager: ServerProcessManager
 
@@ -942,6 +951,10 @@ struct TalkaMacApp: App {
         Task {
             await sm.start()
         }
+
+        TalkaMacLifecycleDelegate.terminateHandler = {
+            sm.terminate()
+        }
     }
 
     var body: some Scene {
@@ -950,9 +963,6 @@ struct TalkaMacApp: App {
                 .frame(minWidth: ShellMetrics.minUtilityWidth)
                 .task {
                     await viewModel.refreshIfNeeded()
-                }
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                    serverManager.terminate()
                 }
         }
         .menuBarExtraStyle(.window)

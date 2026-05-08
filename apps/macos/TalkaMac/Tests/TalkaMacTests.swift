@@ -237,7 +237,7 @@ final class TalkaMacTests: XCTestCase {
               "port": 10095,
               "mode": "2pass",
               "sample_rate": 16000,
-              "startup_timeout_seconds": 30,
+              "startup_timeout_seconds": 180,
               "container_image": "",
               "container_name": "",
               "download_dir": "",
@@ -299,7 +299,7 @@ final class TalkaMacTests: XCTestCase {
               "port": 10095,
               "mode": "2pass",
               "sample_rate": 16000,
-              "startup_timeout_seconds": 30,
+              "startup_timeout_seconds": 180,
               "container_image": "",
               "container_name": "",
               "download_dir": "",
@@ -423,6 +423,24 @@ final class TalkaMacTests: XCTestCase {
         )
     }
 
+    func testAppLifecycleDelegateTerminatesManagedServer() {
+        final class TerminationProbe {
+            var calls = 0
+        }
+
+        let probe = TerminationProbe()
+        TalkaMacLifecycleDelegate.terminateHandler = {
+            probe.calls += 1
+        }
+        defer {
+            TalkaMacLifecycleDelegate.terminateHandler = nil
+        }
+
+        TalkaMacLifecycleDelegate().applicationWillTerminate(Notification(name: NSApplication.willTerminateNotification))
+
+        XCTAssertEqual(probe.calls, 1)
+    }
+
     func testRuntimeConfigGeneratorPreservesExistingConfig() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let resourcesDir = tempDir.appendingPathComponent("resources", isDirectory: true)
@@ -448,7 +466,7 @@ final class TalkaMacTests: XCTestCase {
           port: 10095
           mode: 2pass
           sample_rate: 16000
-          startup_timeout_seconds: 30
+          startup_timeout_seconds: 180
           container_image: ""
           container_name: ""
           download_dir: ""
@@ -481,6 +499,166 @@ final class TalkaMacTests: XCTestCase {
         let contents = try String(contentsOf: configURL, encoding: .utf8)
         XCTAssertTrue(contents.contains("provider: funasr_external"))
         XCTAssertFalse(contents.contains("provider: funasr_embedded"))
+    }
+
+    func testRuntimeConfigGeneratorRefreshesStaleEmbeddedResourcePaths() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let resourcesDir = tempDir.appendingPathComponent("resources", isDirectory: true)
+        let modelsDir = resourcesDir.appendingPathComponent("models/funasr", isDirectory: true)
+        let configURL = tempDir.appendingPathComponent("config.yaml")
+        try FileManager.default.createDirectory(at: modelsDir, withIntermediateDirectories: true)
+        setenv("TALKA_CONFIG_PATH", configURL.path, 1)
+        setenv("TALKA_RESOURCES_PATH", resourcesDir.path, 1)
+
+        let staleConfig = """
+        server:
+          bind_host: 0.0.0.0
+          port: 8080
+          service_name: Talka
+
+        asr:
+          provider: funasr_embedded
+          runtime_path: /Applications/TalkaMac.app/Contents/Resources/talka-asr-runtime
+          host: 127.0.0.1
+          port: 10095
+          mode: 2pass
+          sample_rate: 16000
+          startup_timeout_seconds: 180
+          container_image: ""
+          container_name: ""
+          download_dir: ""
+          hotword_path: /Applications/TalkaMac.app/Contents/Resources/hotwords.txt
+          models:
+            asr: /Applications/TalkaMac.app/Contents/Resources/models/funasr/paraformer-zh-onnx
+            online: /Applications/TalkaMac.app/Contents/Resources/models/funasr/paraformer-zh-online-onnx
+            vad: /Applications/TalkaMac.app/Contents/Resources/models/funasr/fsmn-vad-onnx
+            punc: /Applications/TalkaMac.app/Contents/Resources/models/funasr/ct-punc-onnx
+            itn: /Applications/TalkaMac.app/Contents/Resources/models/funasr/itn-zh
+            lm: ""
+
+        llm:
+          provider: ollama
+          base_url: http://localhost:11434
+          model: custom-model
+          timeout_seconds: 30
+
+        injection:
+          mode: clipboard_paste
+          restore_clipboard: true
+
+        logging:
+          level: info
+        """
+        try staleConfig.write(to: configURL, atomically: true, encoding: .utf8)
+
+        let generatedURL = try EmbeddedRuntimeConfigGenerator().generateConfig()
+
+        XCTAssertEqual(generatedURL, configURL)
+        let contents = try String(contentsOf: configURL, encoding: .utf8)
+        XCTAssertTrue(contents.contains("asr:\n  provider: funasr_embedded"))
+        XCTAssertTrue(contents.contains("runtime_path: \(resourcesDir.appendingPathComponent("talka-asr-runtime").path)"))
+        XCTAssertTrue(contents.contains("hotword_path: \"\""))
+        XCTAssertTrue(contents.contains("    asr: \(modelsDir.appendingPathComponent("paraformer-zh-onnx").path)"))
+        XCTAssertTrue(contents.contains("model: custom-model"))
+        XCTAssertFalse(contents.contains("/Applications/TalkaMac.app/Contents/Resources"))
+    }
+
+    func testRuntimeConfigGeneratorRepairsMalformedEmbeddedResourcePathLine() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let resourcesDir = tempDir.appendingPathComponent("resources", isDirectory: true)
+        let configURL = tempDir.appendingPathComponent("config.yaml")
+        try FileManager.default.createDirectory(at: resourcesDir.appendingPathComponent("models/funasr", isDirectory: true), withIntermediateDirectories: true)
+        setenv("TALKA_CONFIG_PATH", configURL.path, 1)
+        setenv("TALKA_RESOURCES_PATH", resourcesDir.path, 1)
+
+        let malformedConfig = """
+        server:
+          bind_host: 0.0.0.0
+          port: 8080
+          service_name: Talka
+
+        asr:
+          /Applications/TalkaMac.app/Contents/Resources/models/funasr/paraformer-zh-onnx
+          provider: funasr_embedded
+          runtime_path: /Applications/TalkaMac.app/Contents/Resources/talka-asr-runtime
+          host: 127.0.0.1
+          port: 10095
+          mode: 2pass
+          sample_rate: 16000
+          startup_timeout_seconds: 180
+          container_image: ""
+          container_name: ""
+          download_dir: ""
+          hotword_path: /Applications/TalkaMac.app/Contents/Resources/hotwords.txt
+          models:
+            asr: /Applications/TalkaMac.app/Contents/Resources/models/funasr/paraformer-zh-onnx
+            online: /Applications/TalkaMac.app/Contents/Resources/models/funasr/paraformer-zh-online-onnx
+            vad: /Applications/TalkaMac.app/Contents/Resources/models/funasr/fsmn-vad-onnx
+            punc: /Applications/TalkaMac.app/Contents/Resources/models/funasr/ct-punc-onnx
+            itn: /Applications/TalkaMac.app/Contents/Resources/models/funasr/itn-zh
+            lm: ""
+
+        llm:
+          provider: ollama
+          base_url: http://localhost:11434
+          model: qwen3:8b
+          timeout_seconds: 30
+        """
+        try malformedConfig.write(to: configURL, atomically: true, encoding: .utf8)
+
+        _ = try EmbeddedRuntimeConfigGenerator().generateConfig()
+
+        let contents = try String(contentsOf: configURL, encoding: .utf8)
+        XCTAssertFalse(contents.contains("  /Applications/TalkaMac.app/Contents/Resources/models/funasr/paraformer-zh-onnx"))
+        XCTAssertTrue(contents.contains("asr:\n  provider: funasr_embedded"))
+        XCTAssertTrue(contents.contains("hotword_path: \"\""))
+    }
+
+    func testRuntimeConfigGeneratorRestoresMissingEmbeddedProvider() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let resourcesDir = tempDir.appendingPathComponent("resources", isDirectory: true)
+        let configURL = tempDir.appendingPathComponent("config.yaml")
+        try FileManager.default.createDirectory(at: resourcesDir.appendingPathComponent("models/funasr", isDirectory: true), withIntermediateDirectories: true)
+        setenv("TALKA_CONFIG_PATH", configURL.path, 1)
+        setenv("TALKA_RESOURCES_PATH", resourcesDir.path, 1)
+
+        let missingProviderConfig = """
+        server:
+          bind_host: 0.0.0.0
+          port: 8080
+          service_name: Talka
+
+        asr:
+          runtime_path: /Applications/TalkaMac.app/Contents/Resources/talka-asr-runtime
+          host: 127.0.0.1
+          port: 10095
+          mode: 2pass
+          sample_rate: 16000
+          startup_timeout_seconds: 180
+          container_image: ""
+          container_name: ""
+          download_dir: ""
+          hotword_path: ""
+          models:
+            asr: /Applications/TalkaMac.app/Contents/Resources/models/funasr/paraformer-zh-onnx
+            online: /Applications/TalkaMac.app/Contents/Resources/models/funasr/paraformer-zh-online-onnx
+            vad: /Applications/TalkaMac.app/Contents/Resources/models/funasr/fsmn-vad-onnx
+            punc: /Applications/TalkaMac.app/Contents/Resources/models/funasr/ct-punc-onnx
+            itn: /Applications/TalkaMac.app/Contents/Resources/models/funasr/itn-zh
+            lm: ""
+
+        llm:
+          provider: ollama
+          base_url: http://localhost:11434
+          model: qwen3:8b
+          timeout_seconds: 30
+        """
+        try missingProviderConfig.write(to: configURL, atomically: true, encoding: .utf8)
+
+        _ = try EmbeddedRuntimeConfigGenerator().generateConfig()
+
+        let contents = try String(contentsOf: configURL, encoding: .utf8)
+        XCTAssertTrue(contents.contains("asr:\n  provider: funasr_embedded\n  runtime_path: \(resourcesDir.appendingPathComponent("talka-asr-runtime").path)"))
     }
 
     private func makeLiveClient(handler: @escaping @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)) -> LiveControlAPIClient {
@@ -686,7 +864,7 @@ private extension ControlConfig {
                 port: 10095,
                 mode: "2pass",
                 sampleRate: 16_000,
-                startupTimeoutSeconds: 30,
+                startupTimeoutSeconds: 180,
                 containerImage: "",
                 containerName: "",
                 downloadDir: "",

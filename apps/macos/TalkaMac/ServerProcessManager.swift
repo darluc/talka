@@ -130,8 +130,20 @@ final class ServerProcessManager: ObservableObject {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = ["-config", configPath]
+    let logDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("Talka/logs")
+    try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
+    let logPath = logDir.appendingPathComponent("talka-server.log").path
+    if !FileManager.default.fileExists(atPath: logPath) {
+        FileManager.default.createFile(atPath: logPath, contents: nil)
+    }
+    if let logFile = FileHandle(forWritingAtPath: logPath) {
+        logFile.seekToEndOfFile()
+        process.standardOutput = logFile
+        process.standardError = logFile
+    } else {
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
+    }
 
         process.terminationHandler = { [weak self] proc in
             DispatchQueue.main.async {

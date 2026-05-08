@@ -65,12 +65,31 @@
 			name = "Build Go Binaries";
 			outputPaths = (
 				"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/talka-server",
+				"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/talka-asr-runtime",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "cd ${PROJECT_DIR}/../../.. && ./scripts/build-go-binaries.sh --output-dir \"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\" --for-bundle --binaries \"talka-server\"";
+			shellScript = "cd ${PROJECT_DIR}/../../.. && ./scripts/build-go-binaries.sh --output-dir \"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\" --for-bundle --binaries \"talka-server talka-asr-runtime\"";
 		};
 /* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXBuildPhase - Copy Models section */
+		A00000000000000000000091 /* Copy Models */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			name = "Copy Models";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "MODELS_SRC=\"${PROJECT_DIR}/../../../models/funasr\"\nMODELS_DST=\"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/models/funasr\"\nHOTWORDS_SRC=\"${PROJECT_DIR}/../../../hotwords.txt\"\n\nmkdir -p \"${MODELS_DST}\"\nfor model_dir in paraformer-zh-onnx paraformer-zh-online-onnx fsmn-vad-onnx ct-punc-onnx itn-zh; do\n  if [ -d \"${MODELS_SRC}/${model_dir}\" ]; then\n    cp -R \"${MODELS_SRC}/${model_dir}\" \"${MODELS_DST}/\"\n    echo \"Copied ${model_dir}\"\n  else\n    echo \"Warning: ${model_dir} not found, skipping\"\n  fi\ndone\n\nif [ -f \"${HOTWORDS_SRC}\" ]; then\n  cp \"${HOTWORDS_SRC}\" \"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/hotwords.txt\"\n  echo \"Copied hotwords.txt\"\nfi\n";
+		};
+/* End PBXBuildPhase - Copy Models section */
 
 /* Begin PBXGroup section */
 		A00000000000000000000002 = {
@@ -117,11 +136,12 @@
 		A00000000000000000000021 /* TalkaMac */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A00000000000000000000061 /* Build configuration list for PBXNativeTarget "TalkaMac" */;
-			buildPhases = (
-				A00000000000000000000090 /* Build Go Binaries */,
-				A00000000000000000000071 /* Sources */,
-				A00000000000000000000050 /* Frameworks */,
-			);
+		buildPhases = (
+			A00000000000000000000090 /* Build Go Binaries */,
+			A00000000000000000000091 /* Copy Models */,
+			A00000000000000000000071 /* Sources */,
+			A00000000000000000000050 /* Frameworks */,
+		);
 			buildRules = (
 			);
 			dependencies = (

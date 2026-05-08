@@ -65,17 +65,17 @@ func TestNewASRProviderFromConfigBuildsExternalFunASRProvider(t *testing.T) {
 
 func TestASRRuntimeArgsFromConfigUsesProxyRuntimeServeInterface(t *testing.T) {
 	args := asrRuntimeArgsFromConfig(config.ASRConfig{
-		Host:           "127.0.0.1",
-		Port:           10095,
-		Mode:           "2pass",
+		Host: "127.0.0.1",
+		Port: 10095,
+		Mode: "2pass",
 		StartupTimeout: 180,
 		Models: config.ASRModelsConfig{
-			ASR:    "/tmp/asr",
-			Online: "/tmp/online",
-			VAD:    "/tmp/vad",
-			Punc:   "/tmp/punc",
-			ITN:    "/tmp/itn",
-			LM:     "",
+			ASR:     "/tmp/asr",
+			Online:  "/tmp/online",
+			VAD:     "/tmp/vad",
+			Punc:    "/tmp/punc",
+			ITN:     "/tmp/itn",
+			LM:      "",
 		},
 		HotwordPath: "",
 	})
@@ -89,6 +89,26 @@ func TestASRRuntimeArgsFromConfigUsesProxyRuntimeServeInterface(t *testing.T) {
 	assertDoesNotContainArg(t, args, "--port")
 	assertDoesNotContainArg(t, args, "--lm-dir")
 	assertDoesNotContainArg(t, args, "--hotword")
+	assertDoesNotContainArg(t, args, "--funasr-binary") // not set when FunASRBinaryPath is empty
+}
+
+func TestASRRuntimeArgsFromConfigIncludesFunASRBinaryPath(t *testing.T) {
+	args := asrRuntimeArgsFromConfig(config.ASRConfig{
+		Host:            "127.0.0.1",
+		Port:            10095,
+		Mode:            "2pass",
+		StartupTimeout:  180,
+		FunASRBinaryPath: "/usr/local/bin/funasr-wss-server-2pass",
+		Models: config.ASRModelsConfig{
+			ASR:    "/tmp/asr",
+			Online: "/tmp/online",
+			VAD:    "/tmp/vad",
+			Punc:   "/tmp/punc",
+			ITN:    "/tmp/itn",
+		},
+	})
+
+	assertContainsArgPair(t, args, "--funasr-binary", "/usr/local/bin/funasr-wss-server-2pass")
 }
 
 func TestASRRuntimeArgsFromConfigIncludesModelPathsForRuntimeCompatibility(t *testing.T) {

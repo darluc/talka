@@ -24,16 +24,18 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
             return
         }
 
-        let resourcesURL = try runtimeResourcesURL()
-        let runtimeURL = resourcesURL.appendingPathComponent("talka-asr-runtime")
-        let modelsURL = resourcesURL.appendingPathComponent("models/funasr")
-        let hotwordsPath = hotwordsPath(resourcesURL: resourcesURL)
-        let originalYAML = yaml
+	let resourcesURL = try runtimeResourcesURL()
+		let runtimeURL = resourcesURL.appendingPathComponent("talka-asr-runtime")
+		let funasrBinaryURL = resourcesURL.appendingPathComponent("funasr-wss-server-2pass")
+		let modelsURL = resourcesURL.appendingPathComponent("models/funasr")
+		let hotwordsPath = hotwordsPath(resourcesURL: resourcesURL)
+		let originalYAML = yaml
 
-        yaml = removeMalformedEmbeddedResourceLines(from: yaml)
-        yaml = ensureEmbeddedASRProvider(in: yaml)
-        yaml = replaceYAMLValue(named: "runtime_path", indent: "  ", with: runtimeURL.path, in: yaml)
-        yaml = replaceYAMLValue(named: "hotword_path", indent: "  ", with: hotwordsPath, in: yaml)
+		yaml = removeMalformedEmbeddedResourceLines(from: yaml)
+		yaml = ensureEmbeddedASRProvider(in: yaml)
+		yaml = replaceYAMLValue(named: "runtime_path", indent: " ", with: runtimeURL.path, in: yaml)
+		yaml = replaceYAMLValue(named: "funasr_binary_path", indent: " ", with: funasrBinaryURL.path, in: yaml)
+		yaml = replaceYAMLValue(named: "hotword_path", indent: " ", with: hotwordsPath, in: yaml)
         yaml = replaceYAMLValue(named: "asr", indent: "    ", with: modelsURL.appendingPathComponent("paraformer-zh-onnx").path, in: yaml)
         yaml = replaceYAMLValue(named: "online", indent: "    ", with: modelsURL.appendingPathComponent("paraformer-zh-online-onnx").path, in: yaml)
         yaml = replaceYAMLValue(named: "vad", indent: "    ", with: modelsURL.appendingPathComponent("fsmn-vad-onnx").path, in: yaml)
@@ -45,12 +47,13 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
         }
     }
 
-    private func isEmbeddedResourceConfig(_ yaml: String) -> Bool {
-        yaml.contains("provider: funasr_embedded")
-            || yaml.contains("provider: funasr_onnx")
-            || yaml.contains("talka-asr-runtime")
-            || yaml.contains("/models/funasr/")
-    }
+	private func isEmbeddedResourceConfig(_ yaml: String) -> Bool {
+		yaml.contains("provider: funasr_embedded")
+		|| yaml.contains("provider: funasr_onnx")
+		|| yaml.contains("talka-asr-runtime")
+		|| yaml.contains("funasr-wss-server-2pass")
+		|| yaml.contains("/models/funasr/")
+	}
 
     private func removeMalformedEmbeddedResourceLines(from yaml: String) -> String {
         yaml.replacingOccurrences(
@@ -120,49 +123,51 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
         )
     }
 
-    private func defaultConfigYAML(resourcesURL: URL) -> String {
-        let runtimeURL = resourcesURL.appendingPathComponent("talka-asr-runtime")
-        let modelsURL = resourcesURL.appendingPathComponent("models/funasr")
-        let hotwordsPath = hotwordsPath(resourcesURL: resourcesURL)
+	private func defaultConfigYAML(resourcesURL: URL) -> String {
+		let runtimeURL = resourcesURL.appendingPathComponent("talka-asr-runtime")
+		let funasrBinaryURL = resourcesURL.appendingPathComponent("funasr-wss-server-2pass")
+		let modelsURL = resourcesURL.appendingPathComponent("models/funasr")
+		let hotwordsPath = hotwordsPath(resourcesURL: resourcesURL)
 
-        return """
-        server:
-          bind_host: 0.0.0.0
-          port: 8080
-          service_name: Talka
+		return """
+server:
+  bind_host: 0.0.0.0
+  port: 8080
+  service_name: Talka
 
-        asr:
-          provider: funasr_embedded
-          runtime_path: \(runtimeURL.path)
-          host: 127.0.0.1
-          port: 10095
-          mode: 2pass
-          sample_rate: 16000
-          startup_timeout_seconds: 180
-          container_image: ""
-          container_name: ""
-          download_dir: ""
-          hotword_path: \(hotwordsPath)
-          models:
-            asr: \(modelsURL.appendingPathComponent("paraformer-zh-onnx").path)
-            online: \(modelsURL.appendingPathComponent("paraformer-zh-online-onnx").path)
-            vad: \(modelsURL.appendingPathComponent("fsmn-vad-onnx").path)
-            punc: \(modelsURL.appendingPathComponent("ct-punc-onnx").path)
-            itn: \(modelsURL.appendingPathComponent("itn-zh").path)
-            lm: ""
+asr:
+  provider: funasr_embedded
+  runtime_path: \(runtimeURL.path)
+  funasr_binary_path: \(funasrBinaryURL.path)
+  host: 127.0.0.1
+  port: 10095
+  mode: 2pass
+  sample_rate: 16000
+  startup_timeout_seconds: 180
+  container_image: ""
+  container_name: ""
+  download_dir: ""
+  hotword_path: \(hotwordsPath)
+  models:
+    asr: \(modelsURL.appendingPathComponent("paraformer-zh-onnx").path)
+    online: \(modelsURL.appendingPathComponent("paraformer-zh-online-onnx").path)
+    vad: \(modelsURL.appendingPathComponent("fsmn-vad-onnx").path)
+    punc: \(modelsURL.appendingPathComponent("ct-punc-onnx").path)
+    itn: \(modelsURL.appendingPathComponent("itn-zh").path)
+    lm: ""
 
-        llm:
-          provider: ollama
-          base_url: http://localhost:11434
-          model: qwen3:8b
-          timeout_seconds: 30
+llm:
+  provider: ollama
+  base_url: http://localhost:11434
+  model: qwen3:8b
+  timeout_seconds: 30
 
-        injection:
-          mode: clipboard_paste
-          restore_clipboard: true
+injection:
+  mode: clipboard_paste
+  restore_clipboard: true
 
-        logging:
-          level: info
-        """
-    }
+logging:
+  level: info
+"""
+	}
 }

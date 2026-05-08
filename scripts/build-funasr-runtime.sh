@@ -161,8 +161,8 @@ if [ ! -x "$RUNTIME_BINARY" ]; then
   exit 1
 fi
 
-cp -f "$RUNTIME_BINARY" "$RUNTIME_DIR/talka-asr-runtime"
-chmod +x "$RUNTIME_DIR/talka-asr-runtime"
+	cp -f "$RUNTIME_BINARY" "$RUNTIME_DIR/funasr-wss-server-2pass"
+	chmod +x "$RUNTIME_DIR/funasr-wss-server-2pass"
 
 resolve_dep_path() {
   dep="$1"
@@ -299,7 +299,7 @@ copy_dependency_closure() {
     fi
     previous_count="$current_count"
 
-    for target in "$RUNTIME_DIR/talka-asr-runtime" "$FRAMEWORKS_DIR"/*; do
+	for target in "$RUNTIME_DIR/funasr-wss-server-2pass" "$FRAMEWORKS_DIR"/*; do
       [ -f "$target" ] || continue
       otool -L "$target" | tail -n +2 | awk '{print $1}' | while IFS= read -r dep; do
         [ -n "$dep" ] || continue
@@ -313,11 +313,11 @@ copy_dependency_closure() {
   done
 }
 
-patch_binary "$RUNTIME_DIR/talka-asr-runtime"
+patch_binary "$RUNTIME_DIR/funasr-wss-server-2pass"
 copy_dependency_closure
 find "$FRAMEWORKS_DIR" -maxdepth 1 -type f | while IFS= read -r library; do
-  relink_library_to_bundle "$library"
+	relink_library_to_bundle "$library"
 done
-relink_binary_to_bundle "$RUNTIME_DIR/talka-asr-runtime"
+relink_binary_to_bundle "$RUNTIME_DIR/funasr-wss-server-2pass"
 
-printf 'RUNTIME=%s\n' "$RUNTIME_DIR/talka-asr-runtime"
+printf 'RUNTIME=%s\n' "$RUNTIME_DIR/funasr-wss-server-2pass"

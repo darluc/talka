@@ -70,9 +70,13 @@ if provider != "funasr_onnx" && provider != "funasr_embedded" {
 		return nil, fmt.Errorf("unsupported asr.provider %q", cfg.Provider)
 	}
 	isEmbedded := provider == "funasr_embedded"
+	// Resolve FunASR binary path relative to config dir before building args.
+	if cfg.FunASRBinaryPath != "" {
+		cfg.FunASRBinaryPath = resolveOptionalConfigPath(configDir, cfg.FunASRBinaryPath)
+	}
 	manager := asr.NewUpstreamRuntimeManager(asr.UpstreamRuntimeManagerConfig{
-		RuntimePath:    resolveConfigPath(configDir, cfg.RuntimePath),
-		RuntimeArgs:    asrRuntimeArgsFromConfig(cfg),
+		RuntimePath: resolveConfigPath(configDir, cfg.RuntimePath),
+		RuntimeArgs: asrRuntimeArgsFromConfig(cfg),
 		Host:           cfg.Host,
 		Port:           cfg.Port,
 		AlwaysEphemeral: isEmbedded,
@@ -99,7 +103,7 @@ func asrWebsocketURL(host string, port int) string {
 }
 
 func asrRuntimeArgsFromConfig(cfg config.ASRConfig) []string {
-	return []string{
+	args := []string{
 		"serve",
 		"--addr", fmt.Sprintf("%s:%d", cfg.Host, asrProxyPort),
 		"--upstream-url", asrWebsocketURL(cfg.Host, cfg.Port),
@@ -110,6 +114,10 @@ func asrRuntimeArgsFromConfig(cfg config.ASRConfig) []string {
 		"--punc-dir", cfg.Models.Punc,
 		"--itn-dir", cfg.Models.ITN,
 	}
+	if cfg.FunASRBinaryPath != "" {
+		args = append(args, "--funasr-binary", cfg.FunASRBinaryPath)
+	}
+	return args
 }
 
 // asrProxyPort is the default port where the talka-asr-runtime proxy listens.

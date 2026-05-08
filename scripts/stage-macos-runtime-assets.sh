@@ -51,8 +51,18 @@ mkdir -p "$MODEL_DEST_DIR" "$FRAMEWORKS_DIR"
 rsync -a --delete "$MODEL_SOURCE_DIR/" "$MODEL_DEST_DIR/"
 : > "$RESOURCE_DIR/hotwords.txt"
 
-"$ROOT_DIR/scripts/build-funasr-runtime.sh" \
-  --runtime-dir "$RESOURCE_DIR" \
-  --frameworks-dir "$FRAMEWORKS_DIR"
+# NOTE: The Go proxy binary (cmd/talka-asr-runtime) is already built and
+# placed by the Xcode "Build Go Binaries" phase. The C++ FunASR binary
+# (funasr-wss-server-2pass) must also be staged if it has been built.
+# The Go proxy starts the C++ binary as a subprocess when --funasr-binary
+# is provided.
+FUNASR_CPP_BINARY="${TALKA_FUNASR_CPP_BINARY:-$ROOT_DIR/build/funasr-runtime/build/bin/funasr-wss-server-2pass}"
+if [ -x "$FUNASR_CPP_BINARY" ]; then
+	cp -f "$FUNASR_CPP_BINARY" "$RESOURCE_DIR/funasr-wss-server-2pass"
+	chmod +x "$RESOURCE_DIR/funasr-wss-server-2pass"
+	printf 'STAGED funasr-wss-server-2pass from %s\n' "$FUNASR_CPP_BINARY"
+else
+	printf 'WARNING: C++ FunASR binary not found at %s (embedded ASR will not work)\n' "$FUNASR_CPP_BINARY" >&2
+fi
 
 printf 'APP_ASSETS_READY=%s\n' "$APP_PATH"

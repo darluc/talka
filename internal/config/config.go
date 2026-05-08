@@ -19,18 +19,19 @@ type ServerConfig struct {
 }
 
 type ASRConfig struct {
-	Provider       string          `json:"provider" yaml:"provider"`
-	RuntimePath    string          `json:"runtime_path" yaml:"runtime_path"`
-	Host           string          `json:"host" yaml:"host"`
-	Port           int             `json:"port" yaml:"port"`
-	Mode           string          `json:"mode" yaml:"mode"`
-	SampleRate     int             `json:"sample_rate" yaml:"sample_rate"`
-	StartupTimeout int             `json:"startup_timeout_seconds" yaml:"startup_timeout_seconds"`
-	ContainerImage string          `json:"container_image" yaml:"container_image"`
-	ContainerName  string          `json:"container_name" yaml:"container_name"`
-	DownloadDir    string          `json:"download_dir" yaml:"download_dir"`
-	HotwordPath    string          `json:"hotword_path" yaml:"hotword_path"`
-	Models         ASRModelsConfig `json:"models" yaml:"models"`
+	Provider        string `json:"provider" yaml:"provider"`
+	RuntimePath     string `json:"runtime_path" yaml:"runtime_path"`
+	FunASRBinaryPath string `json:"funasr_binary_path" yaml:"funasr_binary_path"`
+	Host            string `json:"host" yaml:"host"`
+	Port            int    `json:"port" yaml:"port"`
+	Mode            string `json:"mode" yaml:"mode"`
+	SampleRate      int    `json:"sample_rate" yaml:"sample_rate"`
+	StartupTimeout  int    `json:"startup_timeout_seconds" yaml:"startup_timeout_seconds"`
+	ContainerImage  string `json:"container_image" yaml:"container_image"`
+	ContainerName   string `json:"container_name" yaml:"container_name"`
+	DownloadDir     string `json:"download_dir" yaml:"download_dir"`
+	HotwordPath     string `json:"hotword_path" yaml:"hotword_path"`
+	Models          ASRModelsConfig `json:"models" yaml:"models"`
 }
 
 type ASRModelsConfig struct {
@@ -72,10 +73,11 @@ func Default() Config {
 			ServiceName: "Talka",
 		},
 		ASR: ASRConfig{
-			Provider:       "funasr_embedded",
-			RuntimePath:    "talka-asr-runtime",
-			Host:           "127.0.0.1",
-			Port:           10095,
+			Provider:         "funasr_embedded",
+			RuntimePath:      "talka-asr-runtime",
+			FunASRBinaryPath: "funasr-wss-server-2pass",
+			Host:             "127.0.0.1",
+			Port:             10095,
 			Mode:           "2pass",
 			SampleRate:     16000,
 			StartupTimeout: 180,

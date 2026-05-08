@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -32,7 +33,7 @@ import (
 )
 
 func TestStatusEndpointReturnsTypedJSON(t *testing.T) {
-	server := newTestServer(t)
+	server := newHealthyTestServer(t)
 
 	resp := mustGet(t, server.URL+"/v1/status")
 	defer resp.Body.Close()
@@ -56,11 +57,96 @@ func TestStatusEndpointReturnsTypedJSON(t *testing.T) {
 	if payload.ASR.Provider != "funasr_embedded" || payload.ASR.SampleRate != 16000 {
 		t.Fatalf("ASR status = %+v, want provider funasr_embedded and sample_rate 16000", payload.ASR)
 	}
+	if !payload.ASR.Ready || payload.ASR.Error != "" {
+		t.Fatalf("ASR readiness = ready:%v error:%q, want ready", payload.ASR.Ready, payload.ASR.Error)
+	}
 	if payload.Ollama.BaseURL != "http://localhost:11434" || payload.Ollama.Model != "qwen3:8b" {
 		t.Fatalf("Ollama status = %+v, want default endpoint/model", payload.Ollama)
 	}
+	if !payload.Ollama.Ready || payload.Ollama.Error != "" {
+		t.Fatalf("Ollama readiness = ready:%v error:%q, want ready", payload.Ollama.Ready, payload.Ollama.Error)
+	}
 	if payload.Permissions.Accessibility != "unknown" {
 		t.Fatalf("Accessibility permission = %q, want unknown", payload.Permissions.Accessibility)
+	}
+}
+
+func TestNewWithPipelineStartsASRRuntimeDuringAppStartup(t *testing.T) {
+	cfg, cfgPath := mustConfig(t)
+	asrProvider := newHealthProbeASR(nil)
+	service, err := NewWithPipeline(cfg, cfgPath, nil, NewPipeline(asrProvider, newHealthProbeLLM(nil), inject.NewFakeInjector()))
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
+	}
+	_ = service
+
+	select {
+	case <-asrProvider.called:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("ASR provider was not warmed up during app startup")
+	}
+}
+
+func TestStatusEndpointReportsDependencyFailureAndAggregatesState(t *testing.T) {
+	cfg, cfgPath := mustConfig(t)
+	service, err := NewWithPipeline(cfg, cfgPath, nil, NewPipeline(newHealthProbeASR(nil), newHealthProbeLLM(errors.New("ollama unavailable")), inject.NewFakeInjector()))
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
+	}
+	server := httptest.NewServer(service.Handler())
+	defer server.Close()
+
+	resp := mustGet(t, server.URL+"/v1/status")
+	defer resp.Body.Close()
+
+	var payload StatusResponse
+	decodeJSON(t, resp, &payload)
+
+	if payload.State != "error" {
+		t.Fatalf("State = %q, want error when Ollama is not ready", payload.State)
+	}
+	if !payload.ASR.Ready {
+		t.Fatalf("ASR.Ready = false, want true")
+	}
+	if payload.Ollama.Ready || !strings.Contains(payload.Ollama.Error, "ollama unavailable") {
+		t.Fatalf("Ollama status = %+v, want not ready with diagnostic", payload.Ollama)
+	}
+}
+
+func TestServeStopsASRRuntimeOnContextCancel(t *testing.T) {
+	cfg, cfgPath := mustConfig(t)
+	asrProvider := newShutdownProbeASR()
+	service, err := NewWithPipeline(cfg, cfgPath, nil, NewPipeline(asrProvider, newHealthProbeLLM(nil), inject.NewFakeInjector()))
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
+	}
+	<-asrProvider.readyCalled
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- service.Serve(ctx, ln)
+	}()
+
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Serve() did not exit after context cancel")
+	}
+
+	select {
+	case <-asrProvider.shutdownCalled:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("ASR runtime was not stopped during app shutdown")
 	}
 }
 
@@ -536,6 +622,17 @@ func newTestServer(t *testing.T) *httptest.Server {
 	service, err := New(cfg, cfgPath, nil)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
+	}
+	return httptest.NewServer(service.Handler())
+}
+
+func newHealthyTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	useFakeIOSPairingStore(t)
+	cfg, cfgPath := mustConfig(t)
+	service, err := NewWithPipeline(cfg, cfgPath, nil, NewPipeline(newHealthProbeASR(nil), newHealthProbeLLM(nil), inject.NewFakeInjector()))
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
 	}
 	return httptest.NewServer(service.Handler())
 }
@@ -1054,4 +1151,73 @@ func (i *blockingTestInjector) calls() int {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	return i.count
+}
+
+type healthProbeASR struct {
+	err    error
+	called chan struct{}
+	once   sync.Once
+}
+
+func newHealthProbeASR(err error) *healthProbeASR {
+	return &healthProbeASR{err: err, called: make(chan struct{})}
+}
+
+func (p *healthProbeASR) EnsureReady(context.Context) error {
+	p.once.Do(func() {
+		close(p.called)
+	})
+	return p.err
+}
+
+func (p *healthProbeASR) Transcribe(context.Context, asr.Request) (asr.Result, error) {
+	return asr.Result{Transcript: "你好，世界"}, nil
+}
+
+type healthProbeLLM struct {
+	err error
+}
+
+func newHealthProbeLLM(err error) *healthProbeLLM {
+	return &healthProbeLLM{err: err}
+}
+
+func (p *healthProbeLLM) HealthCheck(context.Context) error {
+	return p.err
+}
+
+func (p *healthProbeLLM) Cleanup(_ context.Context, transcript string) (llm.Result, error) {
+	return llm.Result{Text: transcript, RawTranscript: transcript, Status: llm.StatusCleaned, Provider: "probe"}, nil
+}
+
+type shutdownProbeASR struct {
+	readyCalled    chan struct{}
+	shutdownCalled chan struct{}
+	readyOnce      sync.Once
+	shutdownOnce   sync.Once
+}
+
+func newShutdownProbeASR() *shutdownProbeASR {
+	return &shutdownProbeASR{
+		readyCalled:    make(chan struct{}),
+		shutdownCalled: make(chan struct{}),
+	}
+}
+
+func (p *shutdownProbeASR) EnsureReady(context.Context) error {
+	p.readyOnce.Do(func() {
+		close(p.readyCalled)
+	})
+	return nil
+}
+
+func (p *shutdownProbeASR) Shutdown(context.Context) error {
+	p.shutdownOnce.Do(func() {
+		close(p.shutdownCalled)
+	})
+	return nil
+}
+
+func (p *shutdownProbeASR) Transcribe(context.Context, asr.Request) (asr.Result, error) {
+	return asr.Result{Transcript: "你好，世界"}, nil
 }

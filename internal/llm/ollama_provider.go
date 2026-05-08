@@ -119,6 +119,32 @@ func (p *OllamaProvider) CleanupStrict(ctx context.Context, transcript string) (
 	return cleaned, nil
 }
 
+func (p *OllamaProvider) HealthCheck(ctx context.Context) error {
+	callCtx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, p.baseURL+"/api/tags", nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		message := strings.TrimSpace(string(body))
+		if message == "" {
+			return fmt.Errorf("ollama /api/tags at %s returned %s", p.baseURL, resp.Status)
+		}
+		return fmt.Errorf("ollama /api/tags at %s returned %s: %s", p.baseURL, resp.Status, message)
+	}
+	return nil
+}
+
 func (p *OllamaProvider) chat(ctx context.Context, requestBody ollamaChatRequest) (string, error) {
 	callCtx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()

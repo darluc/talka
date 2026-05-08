@@ -92,6 +92,42 @@ func TestOllamaProviderUsesStrictChatCleanupContract(t *testing.T) {
 	}
 }
 
+func TestOllamaProviderHealthCheckUsesTagsEndpoint(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		gotPath = req.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"models":[]}`))
+	}))
+	defer server.Close()
+
+	provider := NewOllamaProvider(OllamaConfig{BaseURL: server.URL, Model: "qwen3:8b", Timeout: time.Second})
+
+	if err := provider.HealthCheck(context.Background()); err != nil {
+		t.Fatalf("HealthCheck() error = %v", err)
+	}
+	if gotPath != "/api/tags" {
+		t.Fatalf("HealthCheck path = %q, want /api/tags", gotPath)
+	}
+}
+
+func TestOllamaProviderHealthCheckReportsUnhealthyStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		http.Error(w, "model store unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	provider := NewOllamaProvider(OllamaConfig{BaseURL: server.URL, Model: "qwen3:8b", Timeout: time.Second})
+
+	err := provider.HealthCheck(context.Background())
+	if err == nil {
+		t.Fatal("HealthCheck() error = nil, want unhealthy status")
+	}
+	if !strings.Contains(err.Error(), "model store unavailable") {
+		t.Fatalf("HealthCheck() error = %q, want response diagnostic", err)
+	}
+}
+
 func TestOllamaProviderReturnsTypedTimeoutFallback(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)

@@ -19,6 +19,8 @@ import (
 
 const (
 	statusRunning            = "running"
+	statusStarting           = "starting"
+	statusError              = "error"
 	permissionAccessibility  = "accessibility"
 	accessibilitySettingsURL = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
 	pairingLifetime          = 2 * time.Minute
@@ -27,18 +29,25 @@ const (
 var newIOSPairingStore = func() pairing.Store { return pairing.NewDarwinStore() }
 
 type App struct {
-	mu          sync.RWMutex
-	cfg         config.Config
-	configPath  string
-	configDir   string
-	startedAt   time.Time
-	logger      *slog.Logger
-	devices     map[string]Device
-	pairing     *PairingSession
-	pipeline    *Pipeline
-	iosSessions map[string]*iosAudioSession
-	iosPairing  *pairing.StartResponse
-	iosManager  *pairing.Manager
+	mu           sync.RWMutex
+	cfg          config.Config
+	configPath   string
+	configDir    string
+	startedAt    time.Time
+	logger       *slog.Logger
+	devices      map[string]Device
+	pairing      *PairingSession
+	pipeline     *Pipeline
+	asrStatus    componentReadiness
+	ollamaStatus componentReadiness
+	iosSessions  map[string]*iosAudioSession
+	iosPairing   *pairing.StartResponse
+	iosManager   *pairing.Manager
+}
+
+type componentReadiness struct {
+	Ready bool
+	Error string
 }
 
 type Device struct {
@@ -71,12 +80,16 @@ type ASRStatusResponse struct {
 	RuntimePath string `json:"runtime_path"`
 	SampleRate  int    `json:"sample_rate"`
 	Mode        string `json:"mode"`
+	Ready       bool   `json:"ready"`
+	Error       string `json:"error,omitempty"`
 }
 
 type OllamaStatusResponse struct {
 	BaseURL        string `json:"base_url"`
 	Model          string `json:"model"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
+	Ready          bool   `json:"ready"`
+	Error          string `json:"error,omitempty"`
 }
 
 type PermissionsStatusResponse struct {
@@ -216,7 +229,50 @@ func NewWithPipeline(cfg config.Config, configPath string, logger *slog.Logger, 
 		"capture_audio", cfg.Logging.CaptureAudio,
 		"capture_transcript", cfg.Logging.CaptureTranscript,
 	)
+	app.startASRWarmup()
 	return app, nil
+}
+
+func (a *App) startASRWarmup() {
+	go func() {
+		err := a.pipeline.EnsureASRReady(context.Background())
+		a.setASRStatus(err)
+		if err != nil {
+			a.logger.Error("ASR runtime warmup failed", "error", err)
+			return
+		}
+		a.logger.Info("ASR runtime ready")
+	}()
+}
+
+func (a *App) setASRStatus(err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.asrStatus = readinessFromError(err)
+}
+
+func (a *App) refreshOllamaStatus(ctx context.Context) {
+	err := a.pipeline.CheckLLM(ctx)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.ollamaStatus = readinessFromError(err)
+}
+
+func readinessFromError(err error) componentReadiness {
+	if err != nil {
+		return componentReadiness{Ready: false, Error: err.Error()}
+	}
+	return componentReadiness{Ready: true}
+}
+
+func aggregateStatus(asrStatus componentReadiness, ollamaStatus componentReadiness) string {
+	if asrStatus.Ready && ollamaStatus.Ready {
+		return statusRunning
+	}
+	if asrStatus.Error != "" || ollamaStatus.Error != "" {
+		return statusError
+	}
+	return statusStarting
 }
 
 func NewLogger(w io.Writer, level string) *slog.Logger {
@@ -262,6 +318,7 @@ func (a *App) Serve(ctx context.Context, ln net.Listener) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
+		_ = a.Shutdown(shutdownCtx)
 		err := <-serverErr
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return err
@@ -275,24 +332,33 @@ func (a *App) Serve(ctx context.Context, ln net.Listener) error {
 	}
 }
 
+func (a *App) Shutdown(ctx context.Context) error {
+	return a.pipeline.Shutdown(ctx)
+}
+
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "status endpoint only accepts GET", nil)
 		return
 	}
 
+	healthCtx, cancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
+	a.refreshOllamaStatus(healthCtx)
+	cancel()
+
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
+	state := aggregateStatus(a.asrStatus, a.ollamaStatus)
 	writeJSON(w, http.StatusOK, StatusResponse{
 		ServiceName:   a.cfg.Server.ServiceName,
-		State:         statusRunning,
+		State:         state,
 		ConfigPath:    a.configPath,
 		UptimeSeconds: int64(time.Since(a.startedAt).Round(time.Second) / time.Second),
 		DeviceCount:   len(a.devices),
 		PairingActive: a.pairing != nil && time.Now().Before(a.pairing.ExpiresAt),
-		ASR:           ASRStatusResponse{Provider: a.cfg.ASR.Provider, RuntimePath: a.cfg.ASR.RuntimePath, SampleRate: a.cfg.ASR.SampleRate, Mode: a.cfg.ASR.Mode},
-		Ollama:        OllamaStatusResponse{BaseURL: a.cfg.LLM.BaseURL, Model: a.cfg.LLM.Model, TimeoutSeconds: a.cfg.LLM.TimeoutSeconds},
+		ASR:           ASRStatusResponse{Provider: a.cfg.ASR.Provider, RuntimePath: a.cfg.ASR.RuntimePath, SampleRate: a.cfg.ASR.SampleRate, Mode: a.cfg.ASR.Mode, Ready: a.asrStatus.Ready, Error: a.asrStatus.Error},
+		Ollama:        OllamaStatusResponse{BaseURL: a.cfg.LLM.BaseURL, Model: a.cfg.LLM.Model, TimeoutSeconds: a.cfg.LLM.TimeoutSeconds, Ready: a.ollamaStatus.Ready, Error: a.ollamaStatus.Error},
 		Permissions:   PermissionsStatusResponse{Accessibility: "unknown"},
 	})
 }

@@ -57,6 +57,10 @@ func (p *FakeProvider) Cleanup(_ context.Context, transcript string) (Result, er
 	}
 }
 
+func (p *FakeProvider) HealthCheck(context.Context) error {
+	return nil
+}
+
 func cleanDictation(transcript string) string {
 	normalized := strings.Join(strings.Fields(strings.TrimSpace(transcript)), " ")
 	switch normalized {

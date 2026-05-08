@@ -30,6 +30,18 @@ type Pipeline struct {
 	injector TextInjector
 }
 
+type readinessChecker interface {
+	EnsureReady(ctx context.Context) error
+}
+
+type healthChecker interface {
+	HealthCheck(ctx context.Context) error
+}
+
+type shutdowner interface {
+	Shutdown(ctx context.Context) error
+}
+
 type ProcessResult struct {
 	RawTranscript string
 	FinalText     string
@@ -39,6 +51,39 @@ type ProcessResult struct {
 
 func NewPipeline(asrProvider ASRProvider, llmProvider LLMProvider, injector TextInjector) *Pipeline {
 	return &Pipeline{asr: asrProvider, llm: llmProvider, injector: injector}
+}
+
+func (p *Pipeline) EnsureASRReady(ctx context.Context) error {
+	if p == nil || p.asr == nil {
+		return fmt.Errorf("asr provider is not configured")
+	}
+	if checker, ok := p.asr.(readinessChecker); ok {
+		return checker.EnsureReady(ctx)
+	}
+	if checker, ok := p.asr.(healthChecker); ok {
+		return checker.HealthCheck(ctx)
+	}
+	return nil
+}
+
+func (p *Pipeline) CheckLLM(ctx context.Context) error {
+	if p == nil || p.llm == nil {
+		return fmt.Errorf("llm provider is not configured")
+	}
+	if checker, ok := p.llm.(healthChecker); ok {
+		return checker.HealthCheck(ctx)
+	}
+	return nil
+}
+
+func (p *Pipeline) Shutdown(ctx context.Context) error {
+	if p == nil || p.asr == nil {
+		return nil
+	}
+	if stopper, ok := p.asr.(shutdowner); ok {
+		return stopper.Shutdown(ctx)
+	}
+	return nil
 }
 
 func (p *Pipeline) ProcessPCMFile(ctx context.Context, path string) (ProcessResult, error) {

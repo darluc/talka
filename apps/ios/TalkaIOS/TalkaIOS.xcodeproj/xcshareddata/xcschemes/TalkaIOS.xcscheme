@@ -38,6 +38,16 @@
                ReferencedContainer = "container:TalkaIOS.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "B00000000000000000000023"
+               BuildableName = "TalkaIOSUITests.xctest"
+               BlueprintName = "TalkaIOSUITests"
+               ReferencedContainer = "container:TalkaIOS.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

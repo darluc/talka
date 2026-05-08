@@ -280,10 +280,70 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertEqual(viewModel.lastErrorMessage, "bootstrap exploded")
         XCTAssertEqual(viewModel.lastAudioDiagnostic, "WebSocket bootstrap/sendAudioStart failed: bootstrap exploded")
 
-        let renderedStrings = renderedViewStrings(in: ContentView(viewModel: viewModel).body)
+        let renderedStrings = renderedViewStrings(in: StatusMessageStack(viewModel: viewModel).body)
 
         XCTAssertTrue(renderedStrings.contains("bootstrap exploded"), renderedStrings.joined(separator: "\n"))
         XCTAssertTrue(renderedStrings.contains("Audio diagnostic: WebSocket bootstrap/sendAudioStart failed: bootstrap exploded"), renderedStrings.joined(separator: "\n"))
+    }
+
+    func testRemoteControlShellAvoidsInstructionalMainScreenLabels() {
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(),
+            identityStore: FakePairedIdentityStore(initialIdentity: PairedMacIdentity(deviceID: "mac-1", deviceName: "Darluc's MacBook Pro"))
+        )
+
+        let renderedStrings = renderedViewStrings(in: RemoteMicControlSurface(
+            viewModel: viewModel,
+            isPressingMicrophone: false,
+            showConnectionPanel: {},
+            togglePower: {},
+            startRecording: {},
+            stopRecording: {}
+        ).body)
+
+        XCTAssertFalse(renderedStrings.contains("Talka"), renderedStrings.joined(separator: "\n"))
+        XCTAssertFalse(renderedStrings.contains("Connected"), renderedStrings.joined(separator: "\n"))
+        XCTAssertFalse(renderedStrings.contains("Hold to Talk"), renderedStrings.joined(separator: "\n"))
+    }
+
+    func testPowerButtonDisconnectsCurrentMacButKeepsRememberedPairing() async {
+        let identity = PairedMacIdentity(deviceID: "mac-1", deviceName: "Darluc's MacBook Pro")
+        var clearedSecureSessions = 0
+        let store = FakePairedIdentityStore(initialIdentity: identity)
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(),
+            identityStore: store,
+            disconnectSecureSession: {
+                clearedSecureSessions += 1
+            }
+        )
+        await viewModel.reconnectToKnownMac()
+
+        await viewModel.toggleConnectionPower()
+
+        XCTAssertEqual(viewModel.connectionState, .idle)
+        XCTAssertNil(viewModel.currentMacName)
+        XCTAssertEqual(viewModel.knownMacName, "Darluc's MacBook Pro")
+        XCTAssertEqual(store.identity, identity)
+        XCTAssertEqual(clearedSecureSessions, 1)
+    }
+
+    func testPowerButtonReconnectsRememberedMacWhenDisconnected() async {
+        let identity = PairedMacIdentity(deviceID: "mac-1", deviceName: "Darluc's MacBook Pro")
+        let sessionClient = FakeRemoteSessionClient(reconnectResults: [.success(identity)])
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: sessionClient,
+            identityStore: FakePairedIdentityStore(initialIdentity: identity)
+        )
+
+        await viewModel.toggleConnectionPower()
+
+        XCTAssertEqual(viewModel.connectionState, .paired)
+        XCTAssertEqual(viewModel.currentMacName, "Darluc's MacBook Pro")
+        XCTAssertEqual(sessionClient.reconnectCalls, 1)
     }
 
     func testPairedMacIdentityEncodingDropsReusableSessionMaterial() throws {
@@ -790,10 +850,14 @@ final class TalkaIOSTests: XCTestCase {
             .success([DiscoveredMac(id: "mac-1", name: "Darluc's MacBook Pro")])
         ])
         let store = FakePairedIdentityStore(initialIdentity: identity)
+        var clearedSecureSessions = 0
         let viewModel = RemoteMicShellViewModel(
             discoveryBrowser: browser,
             sessionClient: FakeRemoteSessionClient(),
-            identityStore: store
+            identityStore: store,
+            disconnectSecureSession: {
+                clearedSecureSessions += 1
+            }
         )
 
         await viewModel.discover()
@@ -805,6 +869,7 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertNil(store.identity)
         XCTAssertNil(viewModel.selectedMacName)
         XCTAssertTrue(viewModel.discoveredMacs.isEmpty)
+        XCTAssertEqual(clearedSecureSessions, 1)
     }
 
     func testPairSelectedMacShowsGenericFailureMessage() async {
@@ -935,22 +1000,35 @@ private final class FakePairedIdentityStore: PairedIdentityStoring {
 }
 
     private final class RecordingAudioStreamClient: AudioStreamClient {
-        private(set) var events: [AudioStreamEvent] = []
+        private let lock = NSLock()
+        private var recordedEvents: [AudioStreamEvent] = []
 
-    func sendAudioStart(metadata: AudioStreamMetadata) async throws {
-        events.append(.start(metadata))
-    }
+        var events: [AudioStreamEvent] {
+            lock.withLock { recordedEvents }
+        }
 
-    func sendAudioFrame(sequence: Int, payload: Data) async throws {
-        events.append(.frame(sequence: sequence, byteCount: payload.count))
-    }
+        func sendAudioStart(metadata: AudioStreamMetadata) async throws {
+            lock.withLock {
+                recordedEvents.append(.start(metadata))
+            }
+        }
 
-    func sendAudioStop(lastSequence: Int) async throws {
-        events.append(.stop(lastSequence: lastSequence))
-    }
+        func sendAudioFrame(sequence: Int, payload: Data) async throws {
+            lock.withLock {
+                recordedEvents.append(.frame(sequence: sequence, byteCount: payload.count))
+            }
+        }
+
+        func sendAudioStop(lastSequence: Int) async throws {
+            lock.withLock {
+                recordedEvents.append(.stop(lastSequence: lastSequence))
+            }
+        }
 
         func sendAudioCancel(reason: String) async throws {
-            events.append(.cancel(reason: reason))
+            lock.withLock {
+                recordedEvents.append(.cancel(reason: reason))
+            }
         }
     }
 
@@ -988,28 +1066,51 @@ private final class FakePairedIdentityStore: PairedIdentityStoring {
     }
 
     private final class BlockingStopAudioStreamClient: AudioStreamClient {
-        private(set) var events: [AudioStreamEvent] = []
-        private(set) var stopStarted = false
-        private(set) var lateFrameAttempted = false
+        private let lock = NSLock()
+        private var recordedEvents: [AudioStreamEvent] = []
+        private var recordedStopStarted = false
+        private var recordedLateFrameAttempted = false
         private var stopContinuation: CheckedContinuation<Void, Never>?
 
+        var events: [AudioStreamEvent] {
+            lock.withLock { recordedEvents }
+        }
+
+        var stopStarted: Bool {
+            lock.withLock { recordedStopStarted }
+        }
+
+        var lateFrameAttempted: Bool {
+            lock.withLock { recordedLateFrameAttempted }
+        }
+
         func sendAudioStart(metadata: AudioStreamMetadata) async throws {
-            events.append(.start(metadata))
+            lock.withLock {
+                recordedEvents.append(.start(metadata))
+            }
         }
 
         func sendAudioFrame(sequence: Int, payload: Data) async throws {
-            if stopStarted {
-                lateFrameAttempted = true
+            let shouldRejectFrame = lock.withLock {
+                if recordedStopStarted {
+                    recordedLateFrameAttempted = true
+                    return true
+                }
+                recordedEvents.append(.frame(sequence: sequence, byteCount: payload.count))
+                return false
+            }
+            if shouldRejectFrame {
                 throw RemoteMicFlowError.recordingFailed("audio session could not be processed")
             }
-            events.append(.frame(sequence: sequence, byteCount: payload.count))
         }
 
         func sendAudioStop(lastSequence: Int) async throws {
-            events.append(.stop(lastSequence: lastSequence))
-            stopStarted = true
             await withCheckedContinuation { continuation in
-                stopContinuation = continuation
+                lock.withLock {
+                    recordedEvents.append(.stop(lastSequence: lastSequence))
+                    recordedStopStarted = true
+                    stopContinuation = continuation
+                }
             }
         }
 
@@ -1018,8 +1119,12 @@ private final class FakePairedIdentityStore: PairedIdentityStoring {
         }
 
         func finishStop() {
-            stopContinuation?.resume()
-            stopContinuation = nil
+            let continuation = lock.withLock {
+                let continuation = stopContinuation
+                stopContinuation = nil
+                return continuation
+            }
+            continuation?.resume()
         }
     }
 

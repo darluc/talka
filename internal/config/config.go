@@ -78,7 +78,7 @@ func Default() Config {
 			Port:           10095,
 			Mode:           "2pass",
 			SampleRate:     16000,
-			StartupTimeout: 30,
+			StartupTimeout: 180,
 			ContainerImage: "registry.cn-hangzhou.aliyuncs.com/funasr_repo/funasr:funasr-runtime-sdk-online-cpu-0.1.13",
 			ContainerName:  "talka-funasr",
 			DownloadDir:    "funasr-downloads",

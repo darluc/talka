@@ -92,13 +92,14 @@ func (r *FakeRuntime) serveSession(ctx context.Context, conn *websocketConn) {
 }
 
 type streamState struct {
-	ready            bool
-	started          bool
-	sessionID        string
-	streamID         string
-	framesReceived   int
-	expectedSequence int
-	finalTexts       []string
+	ready              bool
+	started            bool
+	sessionID          string
+	streamID           string
+	framesReceived     int
+	expectedSequence   int
+	finalTexts         []string
+	partialTexts       []string
 }
 
 func fakePartialForFrame(frameNumber int) (string, bool) {

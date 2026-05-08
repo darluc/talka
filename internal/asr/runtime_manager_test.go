@@ -91,6 +91,33 @@ func TestManagedProviderReturnsTypedRuntimeUnavailableAndRestarts(t *testing.T) 
 	}
 }
 
+func TestUpstreamRuntimeManagerValidateAcceptsPortZeroWhenAlwaysEphemeral(t *testing.T) {
+	config := UpstreamRuntimeManagerConfig{
+		RuntimePath:    mustExecutable(t),
+		Host:           "127.0.0.1",
+		Port:           0,
+		AlwaysEphemeral: true,
+		Models:         mustModelPaths(t),
+	}
+
+	if err := config.Validate(); err != nil {
+		t.Fatalf("Validate() with AlwaysEphemeral=true, Port=0 error = %v", err)
+	}
+}
+
+func TestUpstreamRuntimeManagerValidateRejectsPortZeroWithoutAlwaysEphemeral(t *testing.T) {
+	config := UpstreamRuntimeManagerConfig{
+		RuntimePath: mustExecutable(t),
+		Host:        "127.0.0.1",
+		Port:        0,
+		Models:      mustModelPaths(t),
+	}
+
+	if err := config.Validate(); err == nil {
+		t.Fatal("Validate() with Port=0, AlwaysEphemeral=false error = nil, want validation failure")
+	}
+}
+
 func TestUpstreamRuntimeManagerFallsBackToFreePortWhenPreferredPortIsBusy(t *testing.T) {
 	exe := mustExecutable(t)
 	models := mustModelPaths(t)
@@ -127,6 +154,46 @@ func TestUpstreamRuntimeManagerFallsBackToFreePortWhenPreferredPortIsBusy(t *tes
 	if got := manager.URL(); got == fmt.Sprintf("ws://127.0.0.1:%d", preferredPort) {
 		t.Fatalf("URL() = %q, want fallback port different from busy preferred port", got)
 	}
+}
+
+func TestUpstreamRuntimeManagerAlwaysEphemeralIgnoresConfiguredPort(t *testing.T) {
+	exe := mustExecutable(t)
+	models := mustModelPaths(t)
+	configuredPort := 10095
+
+	manager := NewUpstreamRuntimeManager(UpstreamRuntimeManagerConfig{
+		RuntimePath:     exe,
+		RuntimeArgs:     []string{"-test.run=TestRuntimeManagerHelperProcess", "--", "--addr", fmt.Sprintf("127.0.0.1:%d", configuredPort)},
+		Host:            "127.0.0.1",
+		Port:            configuredPort,
+		AlwaysEphemeral: true,
+		Models:          models,
+		StartupTimeout:  2 * time.Second,
+		StopTimeout:     time.Second,
+		Env:             []string{"TALKA_RUNTIME_HELPER_PROCESS=1"},
+	})
+	t.Cleanup(func() {
+		_ = manager.Stop(context.Background())
+	})
+
+	if err := manager.EnsureRunning(context.Background()); err != nil {
+		t.Fatalf("EnsureRunning() error = %v", err)
+	}
+
+	if got := manager.URL(); got == fmt.Sprintf("ws://127.0.0.1:%d/ws", configuredPort) {
+		t.Fatalf("URL() = %q, want random ephemeral port different from configured port %d", got, configuredPort)
+	}
+}
+
+func TestOverrideRuntimeListenAddressUpdatesProxyServeAddr(t *testing.T) {
+	args := overrideRuntimeListenAddress(
+		[]string{"serve", "--addr", "127.0.0.1:10095", "--upstream-url", "ws://127.0.0.1:10095", "--mode", "2pass"},
+		"127.0.0.1",
+		19095,
+	)
+
+	mustContainArgPair(t, args, "--addr", "127.0.0.1:19095")
+	mustContainArgPair(t, args, "--upstream-url", "ws://127.0.0.1:10095")
 }
 
 func TestRuntimeManagerHelperProcess(t *testing.T) {
@@ -235,6 +302,19 @@ func mustContainErrorParts(t *testing.T, got string, parts []string) {
 			t.Fatalf("%q does not contain %q", got, part)
 		}
 	}
+}
+
+func mustContainArgPair(t *testing.T, args []string, key, want string) {
+	t.Helper()
+	for index := 0; index+1 < len(args); index++ {
+		if args[index] == key {
+			if args[index+1] != want {
+				t.Fatalf("%s value = %q, want %q", key, args[index+1], want)
+			}
+			return
+		}
+	}
+	t.Fatalf("args missing %s: %v", key, args)
 }
 
 func mustFreePort(t *testing.T) int {

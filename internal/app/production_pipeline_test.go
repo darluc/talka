@@ -13,19 +13,19 @@ func TestNewASRProviderFromConfigBuildsEmbeddedFunASRProvider(t *testing.T) {
 	root := t.TempDir()
 	runtimePath := mustExecutablePath(t, root, "runtime/talka-asr-runtime")
 	cfg := config.ASRConfig{
-		Provider:    "funasr_embedded",
-		RuntimePath: runtimePath,
-		Host:        "127.0.0.1",
-		Port:        10095,
-		Mode:        "2pass",
-		SampleRate:  16000,
-		StartupTimeout: 30,
+		Provider:       "funasr_embedded",
+		RuntimePath:    runtimePath,
+		Host:           "127.0.0.1",
+		Port:           10095,
+		Mode:           "2pass",
+		SampleRate:     16000,
+		StartupTimeout: 180,
 		Models: config.ASRModelsConfig{
-			ASR:    mustPath(t, root, "models/asr"),
-			Online: mustPath(t, root, "models/online"),
-			VAD:    mustPath(t, root, "models/vad"),
-			Punc:   mustPath(t, root, "models/punc"),
-			ITN:    mustPath(t, root, "models/itn"),
+			ASR:     mustPath(t, root, "models/asr"),
+			Online:  mustPath(t, root, "models/online"),
+			VAD:     mustPath(t, root, "models/vad"),
+			Punc:    mustPath(t, root, "models/punc"),
+			ITN:     mustPath(t, root, "models/itn"),
 		},
 	}
 
@@ -34,19 +34,23 @@ func TestNewASRProviderFromConfigBuildsEmbeddedFunASRProvider(t *testing.T) {
 		t.Fatalf("newASRProviderFromConfig() error = %v", err)
 	}
 
-	if _, ok := provider.(*asr.UpstreamProvider); !ok {
+	upstream, ok := provider.(*asr.UpstreamProvider)
+	if !ok {
 		t.Fatalf("provider type = %T, want *asr.UpstreamProvider", provider)
+	}
+	if !upstream.ManagerAlwaysEphemeral() {
+		t.Fatal("ManagerAlwaysEphemeral() = false, want true for funasr_embedded")
 	}
 }
 
 func TestNewASRProviderFromConfigBuildsExternalFunASRProvider(t *testing.T) {
 	cfg := config.ASRConfig{
-		Provider:   "funasr_external",
-		Host:       "127.0.0.1",
-		Port:       10095,
-		Mode:       "2pass",
-		SampleRate: 16000,
-		StartupTimeout: 30,
+		Provider:       "funasr_external",
+		Host:           "127.0.0.1",
+		Port:           10095,
+		Mode:           "2pass",
+		SampleRate:     16000,
+		StartupTimeout: 180,
 	}
 
 	provider, err := newASRProviderFromConfig(cfg, t.TempDir())
@@ -59,11 +63,12 @@ func TestNewASRProviderFromConfigBuildsExternalFunASRProvider(t *testing.T) {
 	}
 }
 
-func TestASRRuntimeArgsFromConfigDisablesLMWhenUnset(t *testing.T) {
+func TestASRRuntimeArgsFromConfigUsesProxyRuntimeServeInterface(t *testing.T) {
 	args := asrRuntimeArgsFromConfig(config.ASRConfig{
-		Host: "127.0.0.1",
-		Port: 10095,
-		StartupTimeout: 30,
+		Host:           "127.0.0.1",
+		Port:           10095,
+		Mode:           "2pass",
+		StartupTimeout: 180,
 		Models: config.ASRModelsConfig{
 			ASR:    "/tmp/asr",
 			Online: "/tmp/online",
@@ -75,15 +80,23 @@ func TestASRRuntimeArgsFromConfigDisablesLMWhenUnset(t *testing.T) {
 		HotwordPath: "",
 	})
 
-	assertContainsArgPair(t, args, "--lm-dir", "none")
-	assertContainsArgPair(t, args, "--hotword", "")
+	assertContainsArg(t, args, "serve")
+	assertContainsArgPair(t, args, "--addr", "127.0.0.1:19095")
+	assertContainsArgPair(t, args, "--upstream-url", "ws://127.0.0.1:10095/ws")
+	assertContainsArgPair(t, args, "--mode", "2pass")
+	assertContainsArgPair(t, args, "--model-dir", "/tmp/asr")
+	assertDoesNotContainArg(t, args, "--listen-ip")
+	assertDoesNotContainArg(t, args, "--port")
+	assertDoesNotContainArg(t, args, "--lm-dir")
+	assertDoesNotContainArg(t, args, "--hotword")
 }
 
-func TestASRRuntimeArgsFromConfigPassesLMAndHotwordPathsWhenConfigured(t *testing.T) {
+func TestASRRuntimeArgsFromConfigIncludesModelPathsForRuntimeCompatibility(t *testing.T) {
 	args := asrRuntimeArgsFromConfig(config.ASRConfig{
-		Host: "127.0.0.1",
-		Port: 10095,
-		StartupTimeout: 30,
+		Host:           "127.0.0.1",
+		Port:           10095,
+		Mode:           "2pass",
+		StartupTimeout: 180,
 		Models: config.ASRModelsConfig{
 			ASR:    "/tmp/asr",
 			Online: "/tmp/online",
@@ -95,8 +108,11 @@ func TestASRRuntimeArgsFromConfigPassesLMAndHotwordPathsWhenConfigured(t *testin
 		HotwordPath: "/tmp/hotwords.txt",
 	})
 
-	assertContainsArgPair(t, args, "--lm-dir", "/tmp/lm")
-	assertContainsArgPair(t, args, "--hotword", "/tmp/hotwords.txt")
+	assertContainsArgPair(t, args, "--model-dir", "/tmp/asr")
+	assertContainsArgPair(t, args, "--online-model-dir", "/tmp/online")
+	assertContainsArgPair(t, args, "--vad-dir", "/tmp/vad")
+	assertContainsArgPair(t, args, "--punc-dir", "/tmp/punc")
+	assertContainsArgPair(t, args, "--itn-dir", "/tmp/itn")
 }
 
 func TestASRRuntimeArgsFromConfigIncludesConfiguredTimeoutInManagerConfigPath(t *testing.T) {
@@ -154,6 +170,25 @@ func assertContainsArgPair(t *testing.T, args []string, key, want string) {
 		}
 	}
 	t.Fatalf("args missing %s: %v", key, args)
+}
+
+func assertContainsArg(t *testing.T, args []string, want string) {
+	t.Helper()
+	for _, arg := range args {
+		if arg == want {
+			return
+		}
+	}
+	t.Fatalf("args missing %s: %v", want, args)
+}
+
+func assertDoesNotContainArg(t *testing.T, args []string, unwanted string) {
+	t.Helper()
+	for _, arg := range args {
+		if arg == unwanted {
+			t.Fatalf("args contains %s: %v", unwanted, args)
+		}
+	}
 }
 
 func mustExecutablePath(t *testing.T, root, rel string) string {

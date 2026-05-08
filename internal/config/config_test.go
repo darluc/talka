@@ -34,8 +34,8 @@ func TestDefaultConfigMatchesScaffoldConstraints(t *testing.T) {
 	if cfg.ASR.SampleRate != 16000 {
 		t.Fatalf("ASR.SampleRate = %d, want %d", cfg.ASR.SampleRate, 16000)
 	}
-	if cfg.ASR.StartupTimeout != 30 {
-		t.Fatalf("ASR.StartupTimeout = %d, want %d", cfg.ASR.StartupTimeout, 30)
+	if cfg.ASR.StartupTimeout != 180 {
+		t.Fatalf("ASR.StartupTimeout = %d, want %d", cfg.ASR.StartupTimeout, 180)
 	}
 
 	if cfg.ASR.Mode != "2pass" {
@@ -90,7 +90,7 @@ asr:
   provider: funasr_embedded
   runtime_path: runtime
   port: 10095
-  startup_timeout_seconds: 30
+  startup_timeout_seconds: 180
   models:
     asr: models/asr
     online: models/online
@@ -136,7 +136,7 @@ configPath := writeTempConfig(t, tmpDir, []byte(`asr:
   provider: funasr_embedded
   runtime_path: runtime
   port: 10095
-  startup_timeout_seconds: 30
+  startup_timeout_seconds: 180
   models:
     asr: models/asr
     online: ""
@@ -163,7 +163,7 @@ configPath := writeTempConfig(t, tmpDir, []byte(`asr:
   port: 10095
   mode: 2pass
   sample_rate: 16000
-  startup_timeout_seconds: 30
+  startup_timeout_seconds: 180
 `))
 
 	cfg, err := Load(configPath)

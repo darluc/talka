@@ -214,26 +214,31 @@ func (r *ProxyRuntime) drainUpstream(ctx context.Context, upstream, downstream *
 func (r *ProxyRuntime) awaitFinal(ctx context.Context, upstream, downstream *websocketConn, state *streamState) error {
 	deadline := time.Now().Add(upstreamFinalizationTimeout)
 	for {
-		if time.Now().After(deadline) {
-			if len(state.finalTexts) > 0 {
-				return downstream.WriteJSON(protocol.TextFinal{Envelope: protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeTextFinal}, SessionID: state.sessionID, StreamID: state.streamID, Text: strings.TrimSpace(strings.Join(state.finalTexts, ""))})
-			}
-			return context.DeadlineExceeded
+	if time.Now().After(deadline) {
+		text := bestFinalText(state)
+		if text != "" {
+			return downstream.WriteJSON(protocol.TextFinal{Envelope: protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeTextFinal}, SessionID: state.sessionID, StreamID: state.streamID, Text: text})
 		}
+		return context.DeadlineExceeded
+	}
 
 		readCtx, cancel := context.WithTimeout(ctx, upstreamQuietWindow)
 		payload, opcode, err := upstream.readFrameWithOpcode(readCtx)
 		cancel()
 		if err != nil {
-			if isTimeout(err) {
-				if len(state.finalTexts) > 0 {
-					return downstream.WriteJSON(protocol.TextFinal{Envelope: protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeTextFinal}, SessionID: state.sessionID, StreamID: state.streamID, Text: strings.TrimSpace(strings.Join(state.finalTexts, ""))})
-				}
-				continue
-			}
-			if errors.Is(err, io.EOF) && len(state.finalTexts) > 0 {
+		if isTimeout(err) {
+			if len(state.finalTexts) > 0 {
 				return downstream.WriteJSON(protocol.TextFinal{Envelope: protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeTextFinal}, SessionID: state.sessionID, StreamID: state.streamID, Text: strings.TrimSpace(strings.Join(state.finalTexts, ""))})
 			}
+			continue
+		}
+		if errors.Is(err, io.EOF) {
+			text := bestFinalText(state)
+			if text != "" {
+				return downstream.WriteJSON(protocol.TextFinal{Envelope: protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeTextFinal}, SessionID: state.sessionID, StreamID: state.streamID, Text: text})
+			}
+			return err
+		}
 			return err
 		}
 		if opcode != 0x1 {
@@ -243,6 +248,19 @@ func (r *ProxyRuntime) awaitFinal(ctx context.Context, upstream, downstream *web
 			return err
 		}
 	}
+}
+
+// bestFinalText returns the best available final text from the stream state.
+// FunASR's offline mode returns is_final:false for the complete transcription,
+// so we fall back to partial texts when no explicit final texts were received.
+func bestFinalText(state *streamState) string {
+	if len(state.finalTexts) > 0 {
+		return strings.TrimSpace(strings.Join(state.finalTexts, ""))
+	}
+	if len(state.partialTexts) > 0 {
+		return strings.TrimSpace(strings.Join(state.partialTexts, ""))
+	}
+	return ""
 }
 
 func (r *ProxyRuntime) forwardTranscript(payload []byte, downstream *websocketConn, state *streamState) error {
@@ -262,5 +280,6 @@ func (r *ProxyRuntime) forwardTranscript(payload []byte, downstream *websocketCo
 		return downstream.WriteJSON(protocol.ASRFinal{Envelope: protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeASRFinal}, SessionID: state.sessionID, StreamID: state.streamID, SegmentIndex: len(state.finalTexts), Text: text})
 	}
 	state.framesReceived++
+	state.partialTexts = append(state.partialTexts, text)
 	return downstream.WriteJSON(protocol.ASRPartial{Envelope: protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeASRPartial}, SessionID: state.sessionID, StreamID: state.streamID, SegmentIndex: state.framesReceived, Text: text})
 }

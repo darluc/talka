@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -13,18 +14,19 @@ import (
 )
 
 type UpstreamRuntimeManagerConfig struct {
-	RuntimePath    string
-	RuntimeArgs    []string
-	Host           string
-	Port           int
-	HotwordPath    string
-	Models         ModelPaths
-	Env            []string
+	RuntimePath string
+	RuntimeArgs []string
+	Host string
+	Port int
+	AlwaysEphemeral bool
+	HotwordPath string
+	Models ModelPaths
+	Env []string
 	StartupTimeout time.Duration
-	StopTimeout    time.Duration
-	HealthTimeout  time.Duration
-	Stdout         io.Writer
-	Stderr         io.Writer
+	StopTimeout time.Duration
+	HealthTimeout time.Duration
+	Stdout io.Writer
+	Stderr io.Writer
 }
 
 type UpstreamRuntimeManager struct {
@@ -52,7 +54,7 @@ func NewUpstreamRuntimeManager(config UpstreamRuntimeManagerConfig) *UpstreamRun
 	}
 	return &UpstreamRuntimeManager{
 		config:       config,
-		url:          fmt.Sprintf("ws://%s:%d", config.Host, config.Port),
+	url: fmt.Sprintf("ws://%s:%d/ws", config.Host, config.Port),
 		currentPort:  config.Port,
 		stdoutBuffer: newBoundedLogBuffer(runtimeLogBufferLimit),
 		stderrBuffer: newBoundedLogBuffer(runtimeLogBufferLimit),
@@ -67,6 +69,16 @@ func (cfg UpstreamRuntimeManagerConfig) Validate() error {
 		Models:      cfg.Models,
 	}
 	if err := shared.Validate(); err != nil {
+		// When AlwaysEphemeral is true, Port=0 is acceptable (a random port will be chosen).
+		if cfg.AlwaysEphemeral {
+			// Re-validate with a dummy port to check only non-port fields.
+			shared.Port = 1
+			if err2 := shared.Validate(); err2 == nil {
+				return nil
+			} else {
+				return newRuntimeError(ErrorCodeRuntimeConfigInvalid, "embedded FunASR configuration is invalid", err2)
+			}
+		}
 		return newRuntimeError(ErrorCodeRuntimeConfigInvalid, "embedded FunASR configuration is invalid", err)
 	}
 	return nil
@@ -80,6 +92,10 @@ func (m *UpstreamRuntimeManager) URL() string {
 
 func (m *UpstreamRuntimeManager) StartupTimeout() time.Duration {
 	return m.config.StartupTimeout
+}
+
+func (m *UpstreamRuntimeManager) AlwaysEphemeral() bool {
+	return m.config.AlwaysEphemeral
 }
 
 func (m *UpstreamRuntimeManager) EnsureRunning(ctx context.Context) error {
@@ -121,7 +137,13 @@ func (m *UpstreamRuntimeManager) Start(ctx context.Context) error {
 	attemptedPorts := map[int]struct{}{}
 	var lastErr error
 	for attempt := 0; attempt < maxDynamicPortAttempts; attempt++ {
-		launchPort, err := nextAvailableLoopbackPort(m.config.Host, m.config.Port, attemptedPorts)
+		var launchPort int
+		var err error
+		if m.config.AlwaysEphemeral {
+			launchPort, err = reserveLoopbackPort(m.config.Host)
+		} else {
+			launchPort, err = nextAvailableLoopbackPort(m.config.Host, m.config.Port, attemptedPorts)
+		}
 		if err != nil {
 			m.mu.Unlock()
 			chooseErr := newRuntimeErrorWithDiagnostic(
@@ -243,9 +265,8 @@ func multiWriterOrDiscard(primary io.Writer, secondary io.Writer) io.Writer {
 }
 
 func (m *UpstreamRuntimeManager) startOnPort(ctx context.Context, launchPort int) error {
-	args := overrideFlagValue(m.config.RuntimeArgs, "--listen-ip", m.config.Host)
-	args = overrideFlagValue(args, "--port", strconv.Itoa(launchPort))
-	url := fmt.Sprintf("ws://%s:%d", m.config.Host, launchPort)
+	args := overrideRuntimeListenAddress(m.config.RuntimeArgs, m.config.Host, launchPort)
+	url := fmt.Sprintf("ws://%s:%d/ws", m.config.Host, launchPort)
 
 	m.mu.Lock()
 	m.stdoutBuffer.Reset()
@@ -290,4 +311,22 @@ func (m *UpstreamRuntimeManager) startOnPort(ctx context.Context, launchPort int
 		m.stderrBuffer.String(),
 		fmt.Errorf("runtime did not become healthy within %s", m.config.StartupTimeout),
 	)
+}
+
+func overrideRuntimeListenAddress(args []string, host string, port int) []string {
+	if containsArg(args, "--addr") {
+		return overrideFlagValue(args, "--addr", net.JoinHostPort(host, strconv.Itoa(port)))
+	}
+
+	args = overrideFlagValue(args, "--listen-ip", host)
+	return overrideFlagValue(args, "--port", strconv.Itoa(port))
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
 }

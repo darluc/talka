@@ -38,7 +38,7 @@ type DockerRuntimeManager struct {
 
 func NewDockerRuntimeManager(config DockerRuntimeManagerConfig) *DockerRuntimeManager {
 	if config.StartupTimeout <= 0 {
-		config.StartupTimeout = 45 * time.Second
+		config.StartupTimeout = 180 * time.Second
 	}
 	if strings.TrimSpace(config.Image) == "" {
 		config.Image = defaultContainerImage
@@ -344,7 +344,7 @@ func (m *DockerRuntimeManager) setURL(port int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.currentPort = port
-	m.url = fmt.Sprintf("ws://%s:%d", m.config.Host, port)
+	m.url = fmt.Sprintf("ws://%s:%d/ws", m.config.Host, port)
 }
 
 func (m *DockerRuntimeManager) recordLastError(value string) {

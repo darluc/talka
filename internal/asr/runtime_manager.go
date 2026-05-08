@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	defaultStartupTimeout = 30 * time.Second
+	defaultStartupTimeout = 180 * time.Second
 	defaultStopTimeout    = 2 * time.Second
 	defaultHealthTimeout  = 500 * time.Millisecond
 )

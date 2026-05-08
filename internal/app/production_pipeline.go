@@ -3,7 +3,6 @@ package app
 import (
 	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -37,8 +36,8 @@ func newASRProviderFromConfig(cfg config.ASRConfig, configDir string) (ASRProvid
 	}
 	if provider == "funasr_external" {
 		return asr.NewUpstreamProvider(nil, asr.UpstreamProviderConfig{
-			URL:     fmt.Sprintf("ws://%s:%d", cfg.Host, cfg.Port),
-			Mode:    cfg.Mode,
+			URL: fmt.Sprintf("ws://%s:%d/ws", cfg.Host, cfg.Port),
+			Mode: cfg.Mode,
 			Timeout: 5 * time.Second,
 		}), nil
 	}
@@ -61,33 +60,35 @@ func newASRProviderFromConfig(cfg config.ASRConfig, configDir string) (ASRProvid
 			},
 			StartupTimeout: time.Duration(cfg.StartupTimeout) * time.Second,
 		})
-		return asr.NewUpstreamProvider(manager, asr.UpstreamProviderConfig{
-			URL:     fmt.Sprintf("ws://%s:%d", cfg.Host, cfg.Port),
-			Mode:    cfg.Mode,
-			Timeout: 5 * time.Second,
-		}), nil
-	}
-	if provider != "funasr_onnx" && provider != "funasr_embedded" {
+	return asr.NewUpstreamProvider(manager, asr.UpstreamProviderConfig{
+		URL: fmt.Sprintf("ws://%s:%d/ws", cfg.Host, cfg.Port),
+		Mode: cfg.Mode,
+		Timeout: 5 * time.Second,
+	}), nil
+}
+if provider != "funasr_onnx" && provider != "funasr_embedded" {
 		return nil, fmt.Errorf("unsupported asr.provider %q", cfg.Provider)
 	}
+	isEmbedded := provider == "funasr_embedded"
 	manager := asr.NewUpstreamRuntimeManager(asr.UpstreamRuntimeManagerConfig{
-		RuntimePath: resolveConfigPath(configDir, cfg.RuntimePath),
-		RuntimeArgs: asrRuntimeArgsFromConfig(cfg),
-		Host:        cfg.Host,
-		Port:        cfg.Port,
-		HotwordPath: resolveOptionalConfigPath(configDir, cfg.HotwordPath),
+		RuntimePath:    resolveConfigPath(configDir, cfg.RuntimePath),
+		RuntimeArgs:    asrRuntimeArgsFromConfig(cfg),
+		Host:           cfg.Host,
+		Port:           cfg.Port,
+		AlwaysEphemeral: isEmbedded,
+		HotwordPath:    resolveOptionalConfigPath(configDir, cfg.HotwordPath),
 		Models: asr.ModelPaths{
-			ASR:    resolveConfigPath(configDir, cfg.Models.ASR),
-			Online: resolveConfigPath(configDir, cfg.Models.Online),
-			VAD:    resolveConfigPath(configDir, cfg.Models.VAD),
-			Punc:   resolveConfigPath(configDir, cfg.Models.Punc),
-			ITN:    resolveConfigPath(configDir, cfg.Models.ITN),
-			LM:     resolveOptionalConfigPath(configDir, cfg.Models.LM),
+			ASR:     resolveConfigPath(configDir, cfg.Models.ASR),
+			Online:  resolveConfigPath(configDir, cfg.Models.Online),
+			VAD:     resolveConfigPath(configDir, cfg.Models.VAD),
+			Punc:    resolveConfigPath(configDir, cfg.Models.Punc),
+			ITN:     resolveConfigPath(configDir, cfg.Models.ITN),
+			LM:      resolveOptionalConfigPath(configDir, cfg.Models.LM),
 		},
 		StartupTimeout: time.Duration(cfg.StartupTimeout) * time.Second,
 	})
 	return asr.NewUpstreamProvider(manager, asr.UpstreamProviderConfig{
-		URL:     fmt.Sprintf("ws://%s:%d", cfg.Host, cfg.Port),
+		URL: asrWebsocketURL(cfg.Host, asrProxyPort),
 		Mode:    cfg.Mode,
 		Timeout: 5 * time.Second,
 	}), nil
@@ -98,24 +99,25 @@ func asrWebsocketURL(host string, port int) string {
 }
 
 func asrRuntimeArgsFromConfig(cfg config.ASRConfig) []string {
-	lmDir := strings.TrimSpace(cfg.Models.LM)
-	if lmDir == "" {
-		lmDir = "none"
-	}
-	hotwordPath := cfg.HotwordPath
 	return []string{
-		"--listen-ip", cfg.Host,
-		"--port", strconv.Itoa(cfg.Port),
+		"serve",
+		"--addr", fmt.Sprintf("%s:%d", cfg.Host, asrProxyPort),
+		"--upstream-url", asrWebsocketURL(cfg.Host, cfg.Port),
+		"--mode", cfg.Mode,
 		"--model-dir", cfg.Models.ASR,
 		"--online-model-dir", cfg.Models.Online,
 		"--vad-dir", cfg.Models.VAD,
 		"--punc-dir", cfg.Models.Punc,
 		"--itn-dir", cfg.Models.ITN,
-		"--lm-dir", lmDir,
-		"--hotword", hotwordPath,
-		"--certfile", "0",
 	}
 }
+
+// asrProxyPort is the default port where the talka-asr-runtime proxy listens.
+// The proxy forwards WebSocket connections to the upstream FunASR service
+// running on the configured ASR port (cfg.Port, typically 10095).
+// Using a separate port avoids a circular reference where the proxy
+// would connect to itself instead of the upstream.
+const asrProxyPort = 19095
 
 func newLLMProviderFromConfig(cfg config.LLMConfig) (LLMProvider, error) {
 	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))

@@ -51,6 +51,10 @@ func (p *SidecarProvider) Transcribe(ctx context.Context, request Request) (Resu
 	}, nil
 }
 
+func (p *SidecarProvider) HealthCheck(ctx context.Context) error {
+	return p.client.HealthCheck(ctx)
+}
+
 func DefaultAudioMetadata() protocol.AudioMetadata {
 	return protocol.AudioMetadata{
 		SampleRate:      16000,

@@ -204,7 +204,7 @@ func runSmoke(stdout, stderr io.Writer, args []string) error {
 		return err
 	}
 
-	client := asr.NewClient(asr.Config{URL: url, Version: protocol.VersionV1Alpha1, Timeout: 5 * time.Second})
+	client := asr.NewClient(asr.Config{URL: url, Version: protocol.VersionV1Alpha1, Timeout: 30 * time.Second})
 	result, err := client.Transcribe(context.Background(), asr.DefaultAudioMetadata(), frames)
 	if err != nil {
 		if crashMidstream && asr.IsRuntimeUnavailableError(err) {

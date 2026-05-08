@@ -38,10 +38,8 @@ func NewUpstreamProvider(manager UpstreamManager, config UpstreamProviderConfig)
 }
 
 func (p *UpstreamProvider) Transcribe(ctx context.Context, request Request) (Result, error) {
-	if p.manager != nil {
-		if err := p.manager.EnsureRunning(ctx); err != nil {
-			return Result{}, err
-		}
+	if err := p.EnsureReady(ctx); err != nil {
+		return Result{}, err
 	}
 
 	conn, err := dialFunASRWebSocket(ctx, p.runtimeURL(), p.config.Timeout)
@@ -93,6 +91,26 @@ func (p *UpstreamProvider) Transcribe(ctx context.Context, request Request) (Res
 	return result, nil
 }
 
+func (p *UpstreamProvider) EnsureReady(ctx context.Context) error {
+	if p.manager != nil {
+		return p.manager.EnsureRunning(ctx)
+	}
+	return nil
+}
+
+func (p *UpstreamProvider) Shutdown(ctx context.Context) error {
+	type stopper interface {
+		Stop(ctx context.Context) error
+	}
+	if p.manager == nil {
+		return nil
+	}
+	if manager, ok := p.manager.(stopper); ok {
+		return manager.Stop(ctx)
+	}
+	return nil
+}
+
 func (p *UpstreamProvider) runtimeURL() string {
 	type runtimeURLProvider interface {
 		URL() string
@@ -113,6 +131,16 @@ func (p *UpstreamProvider) ManagerStartupTimeout() int {
 		return int(provider.StartupTimeout().Round(time.Second) / time.Second)
 	}
 	return 0
+}
+
+func (p *UpstreamProvider) ManagerAlwaysEphemeral() bool {
+	type alwaysEphemeralProvider interface {
+		AlwaysEphemeral() bool
+	}
+	if provider, ok := p.manager.(alwaysEphemeralProvider); ok {
+		return provider.AlwaysEphemeral()
+	}
+	return false
 }
 
 func normalizeFunASRMode(mode string) string {
@@ -151,13 +179,29 @@ func drainUpstreamResult(ctx context.Context, conn *websocketConn, result *Resul
 func awaitFinalResult(ctx context.Context, conn *websocketConn, result *Result) error {
 	deadline := time.Now().Add(upstreamFinalizationTimeout)
 	for {
-		if time.Now().After(deadline) {
-			if result.Transcript != "" || len(result.FinalSegments) > 0 {
-				result.Transcript = joinFinalSegments(result.FinalSegments)
-				return nil
-			}
-			return context.DeadlineExceeded
+	if time.Now().After(deadline) {
+		if result.Transcript != "" || len(result.FinalSegments) > 0 {
+			result.Transcript = joinFinalSegments(result.FinalSegments)
+			return nil
 		}
+		// FunASR offline mode may return is_final:false for the
+		// complete result; promote partials to finals on timeout.
+		if len(result.Partials) > 0 {
+			result.FinalSegments = make([]protocol.ASRFinal, len(result.Partials))
+			for i, p := range result.Partials {
+				result.FinalSegments[i] = protocol.ASRFinal{
+					Envelope:     p.Envelope,
+					SessionID:    p.SessionID,
+					StreamID:     p.StreamID,
+					SegmentIndex: i + 1,
+					Text:         p.Text,
+				}
+			}
+			result.Transcript = joinFinalSegments(result.FinalSegments)
+			return nil
+		}
+		return context.DeadlineExceeded
+	}
 
 		readCtx, cancel := context.WithTimeout(ctx, upstreamQuietWindow)
 		payload, opcode, err := conn.readFrameWithOpcode(readCtx)
@@ -170,10 +214,29 @@ func awaitFinalResult(ctx context.Context, conn *websocketConn, result *Result) 
 				}
 				continue
 			}
-			if errors.Is(err, io.EOF) && (result.Transcript != "" || len(result.FinalSegments) > 0) {
+		if errors.Is(err, io.EOF) {
+			// FunASR offline mode returns is_final:false for the complete
+			// transcription, so we may have partials but no final segments.
+			if result.Transcript != "" || len(result.FinalSegments) > 0 {
 				result.Transcript = joinFinalSegments(result.FinalSegments)
 				return nil
 			}
+			if len(result.Partials) > 0 {
+				result.FinalSegments = make([]protocol.ASRFinal, len(result.Partials))
+				for i, p := range result.Partials {
+					result.FinalSegments[i] = protocol.ASRFinal{
+						Envelope:     p.Envelope,
+						SessionID:    p.SessionID,
+						StreamID:     p.StreamID,
+						SegmentIndex: i + 1,
+						Text:         p.Text,
+					}
+				}
+				result.Transcript = joinFinalSegments(result.FinalSegments)
+				return nil
+			}
+			return err
+		}
 			return err
 		}
 		if opcode != 0x1 {

@@ -1,9 +1,5 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-	"opencode-openai-codex-auth",
-	"file:///Users/darluc/.config/opencode/node_modules/oh-my-opencode/dist/index.js"
-  ],
   "mcp": {
   	"akshare-one-mcp": { "enabled": false },
   	"yahoo-finance-mcp": { "enabled": false },

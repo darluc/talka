@@ -256,16 +256,29 @@ func buildFunASRArgs(parentArgs []string, host string, port int) []string {
 
 	// Forward model directory flags from the Go proxy's args.
 	flagMap := map[string]string{
-		"--model-dir":       "--model-dir",
+		"--model-dir":        "--model-dir",
 		"--online-model-dir": "--online-model-dir",
-		"--vad-dir":         "--vad-dir",
-		"--punc-dir":        "--punc-dir",
-		"--itn-dir":         "--itn-dir",
+		"--vad-dir":          "--vad-dir",
+		"--punc-dir":         "--punc-dir",
+		"--itn-dir":          "--itn-dir",
+		"--lm-dir":           "--lm-dir",
 	}
+	hasLMDir := false
 	for i := 0; i < len(parentArgs); i++ {
 		if destFlag, ok := flagMap[parentArgs[i]]; ok && i+1 < len(parentArgs) {
 			args = append(args, destFlag, parentArgs[i+1])
+			if parentArgs[i] == "--lm-dir" {
+				hasLMDir = true
+			}
 		}
+	}
+
+	// The C++ FunASR binary defaults --lm-dir to a non-existent path and
+	// exits if the LM model is not found. When no --lm-dir is provided,
+	// pass "NONE" to skip LM loading (the C++ binary treats "NONE" and
+	// "none" as "skip LM model").
+	if !hasLMDir {
+		args = append(args, "--lm-dir", "NONE")
 	}
 
 	return args

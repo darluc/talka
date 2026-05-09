@@ -108,10 +108,34 @@ func TestBuildFunASRArgs(t *testing.T) {
 	assertHasFlagPair(t, args, "--punc-dir", "/models/punc")
 	assertHasFlagPair(t, args, "--itn-dir", "/models/itn")
 
+	// Should default --lm-dir to NONE when not provided by parent
+	assertHasFlagPair(t, args, "--lm-dir", "NONE")
+
 	// Should NOT contain Go-proxy-only flags
 	for _, arg := range args {
 		if arg == "--addr" || arg == "--upstream-url" || arg == "--mode" || arg == "--funasr-binary" || arg == "serve" {
 			t.Fatalf("buildFunASRArgs() should not contain Go-proxy-only flag %q, got %v", arg, args)
+		}
+	}
+}
+
+func TestBuildFunASRArgsWithLMDir(t *testing.T) {
+	parentArgs := []string{
+		"serve",
+		"--addr", "127.0.0.1:19095",
+		"--model-dir", "/models/asr",
+		"--lm-dir", "/models/lm",
+	}
+
+	args := buildFunASRArgs(parentArgs, "127.0.0.1", 12345)
+
+	// Should forward the provided --lm-dir, not override with NONE
+	assertHasFlagPair(t, args, "--lm-dir", "/models/lm")
+
+	// Should NOT contain --lm-dir NONE
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--lm-dir" && args[i+1] == "NONE" {
+			t.Fatalf("buildFunASRArgs() should not add --lm-dir NONE when --lm-dir already provided, got %v", args)
 		}
 	}
 }

@@ -58,6 +58,12 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertEqual(framer.bufferedByteCount, 0)
     }
 
+    func testAudioWaveArcAmplitudeIsClampedInsideButtonBounds() {
+        XCTAssertEqual(AudioWaveArcMetrics.amplitude(for: -0.5), AudioWaveArcMetrics.minimumAmplitude)
+        XCTAssertEqual(AudioWaveArcMetrics.amplitude(for: 0), AudioWaveArcMetrics.minimumAmplitude)
+        XCTAssertEqual(AudioWaveArcMetrics.amplitude(for: 99), AudioWaveArcMetrics.maximumAmplitude)
+    }
+
     func testAudioStreamClientSendsStartFramesAndStopWithStrictSequences() async {
         let streamClient = RecordingAudioStreamClient()
         let viewModel = RemoteMicShellViewModel(

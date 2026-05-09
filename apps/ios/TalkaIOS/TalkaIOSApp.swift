@@ -1964,6 +1964,12 @@ private struct MicrophonePressButton: View {
                 .frame(width: 220, height: 220)
                 .scaleEffect(recordingState == .stopping ? 0.96 : 1)
 
+            if recordingState == .recording {
+                AudioWaveArcLayer(audioLevel: audioLevel)
+                    .frame(width: 220, height: 220)
+                    .allowsHitTesting(false)
+            }
+
             Circle()
                 .fill(Color(uiColor: .label))
                 .frame(width: 168, height: 168)
@@ -2007,6 +2013,90 @@ private struct MicrophonePressButton: View {
         case .idle:
             return "idle"
         }
+    }
+}
+
+struct AudioWaveArcMetrics {
+    static let minimumAmplitude: Double = 4
+    static let maximumAmplitude: Double = 13
+
+    static func amplitude(for audioLevel: Double) -> Double {
+        let normalizedLevel = min(max(audioLevel, 0), 1)
+        return minimumAmplitude + (maximumAmplitude - minimumAmplitude) * normalizedLevel
+    }
+}
+
+private struct AudioWaveArcLayer: View {
+    var audioLevel: Double
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+            let phase = timeline.date.timeIntervalSinceReferenceDate * 4.2
+            let amplitude = AudioWaveArcMetrics.amplitude(for: audioLevel)
+
+            ZStack {
+                AudioWaveArcShape(amplitude: amplitude * 0.55, phase: phase + .pi)
+                    .stroke(Color.green.opacity(0.24), style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
+                    .blur(radius: 0.6)
+
+                AudioWaveArcShape(amplitude: amplitude, phase: phase)
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color.green.opacity(0.36),
+                                Color(red: 0.34, green: 0.95, blue: 0.55),
+                                Color.green.opacity(0.42)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round)
+                    )
+                    .shadow(color: Color.green.opacity(0.34), radius: 8)
+            }
+        }
+    }
+}
+
+private struct AudioWaveArcShape: Shape {
+    var amplitude: Double
+    var phase: Double
+
+    var animatableData: AnimatablePair<Double, Double> {
+        get { AnimatablePair(amplitude, phase) }
+        set {
+            amplitude = newValue.first
+            phase = newValue.second
+        }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let baseRadius = min(rect.width, rect.height) * 0.415
+        let startAngle = Angle.degrees(208).radians
+        let endAngle = Angle.degrees(512).radians
+        let steps = 150
+        var path = Path()
+
+        for index in 0...steps {
+            let progress = Double(index) / Double(steps)
+            let angle = startAngle + (endAngle - startAngle) * progress
+            let edgeFade = sin(progress * .pi)
+            let ripple = sin(progress * .pi * 6.0 + phase)
+            let radius = baseRadius + ripple * amplitude * edgeFade
+            let point = CGPoint(
+                x: center.x + cos(angle) * radius,
+                y: center.y + sin(angle) * radius
+            )
+
+            if index == 0 {
+                path.move(to: point)
+            } else {
+                path.addLine(to: point)
+            }
+        }
+
+        return path
     }
 }
 

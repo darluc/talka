@@ -284,19 +284,22 @@ func buildFunASRArgs(parentArgs []string, host string, port int) []string {
 	return args
 }
 
-// waitForFunASRHealth polls the FunASR WebSocket endpoint until it responds
-// or the timeout expires.
+// waitForFunASRHealth polls the FunASR WebSocket endpoint until it accepts
+// connections or the timeout expires. The C++ FunASR server does not speak
+// the Talka protocol, so we verify health by confirming a WebSocket
+// handshake succeeds (TCP-level check).
 func waitForFunASRHealth(ctx context.Context, url string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		client := asr.NewClient(asr.Config{URL: url, Version: protocol.VersionV1Alpha1, Timeout: 2 * time.Second})
-		if err := client.HealthCheck(ctx); err == nil {
+		conn, err := asr.DialWebSocket(ctx, url, 2*time.Second)
+		if err == nil {
+			conn.Close()
 			return nil
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("timeout after %s", timeout)
 }

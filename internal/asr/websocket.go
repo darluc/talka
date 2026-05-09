@@ -30,8 +30,12 @@ type websocketConn struct {
 	readTimeout  time.Duration
 }
 
-func dialWebSocket(ctx context.Context, rawURL string, timeout time.Duration) (*websocketConn, error) {
+func DialWebSocket(ctx context.Context, rawURL string, timeout time.Duration) (*websocketConn, error) {
 	return dialWebSocketWithSubprotocols(ctx, rawURL, timeout, nil)
+}
+
+func dialWebSocket(ctx context.Context, rawURL string, timeout time.Duration) (*websocketConn, error) {
+	return DialWebSocket(ctx, rawURL, timeout)
 }
 
 func dialWebSocketWithSubprotocols(ctx context.Context, rawURL string, timeout time.Duration, subprotocols []string) (*websocketConn, error) {

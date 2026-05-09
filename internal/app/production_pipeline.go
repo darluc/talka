@@ -36,8 +36,8 @@ func newASRProviderFromConfig(cfg config.ASRConfig, configDir string) (ASRProvid
 	}
 	if provider == "funasr_external" {
 		return asr.NewUpstreamProvider(nil, asr.UpstreamProviderConfig{
-			URL: fmt.Sprintf("ws://%s:%d/ws", cfg.Host, cfg.Port),
-			Mode: cfg.Mode,
+			URL:     fmt.Sprintf("ws://%s:%d/ws", cfg.Host, cfg.Port),
+			Mode:    cfg.Mode,
 			Timeout: 5 * time.Second,
 		}), nil
 	}
@@ -60,13 +60,13 @@ func newASRProviderFromConfig(cfg config.ASRConfig, configDir string) (ASRProvid
 			},
 			StartupTimeout: time.Duration(cfg.StartupTimeout) * time.Second,
 		})
-	return asr.NewUpstreamProvider(manager, asr.UpstreamProviderConfig{
-		URL: fmt.Sprintf("ws://%s:%d/ws", cfg.Host, cfg.Port),
-		Mode: cfg.Mode,
-		Timeout: 5 * time.Second,
-	}), nil
-}
-if provider != "funasr_onnx" && provider != "funasr_embedded" {
+		return asr.NewUpstreamProvider(manager, asr.UpstreamProviderConfig{
+			URL:     fmt.Sprintf("ws://%s:%d/ws", cfg.Host, cfg.Port),
+			Mode:    cfg.Mode,
+			Timeout: 5 * time.Second,
+		}), nil
+	}
+	if provider != "funasr_onnx" && provider != "funasr_embedded" {
 		return nil, fmt.Errorf("unsupported asr.provider %q", cfg.Provider)
 	}
 	isEmbedded := provider == "funasr_embedded"
@@ -75,24 +75,31 @@ if provider != "funasr_onnx" && provider != "funasr_embedded" {
 		cfg.FunASRBinaryPath = resolveOptionalConfigPath(configDir, cfg.FunASRBinaryPath)
 	}
 	manager := asr.NewUpstreamRuntimeManager(asr.UpstreamRuntimeManagerConfig{
-		RuntimePath: resolveConfigPath(configDir, cfg.RuntimePath),
-		RuntimeArgs: asrRuntimeArgsFromConfig(cfg),
-		Host:           cfg.Host,
-		Port:           cfg.Port,
+		RuntimePath:     resolveConfigPath(configDir, cfg.RuntimePath),
+		RuntimeArgs:     asrRuntimeArgsFromConfig(cfg),
+		Host:            cfg.Host,
+		Port:            cfg.Port,
 		AlwaysEphemeral: isEmbedded,
-		HotwordPath:    resolveOptionalConfigPath(configDir, cfg.HotwordPath),
+		HotwordPath:     resolveOptionalConfigPath(configDir, cfg.HotwordPath),
 		Models: asr.ModelPaths{
-			ASR:     resolveConfigPath(configDir, cfg.Models.ASR),
-			Online:  resolveConfigPath(configDir, cfg.Models.Online),
-			VAD:     resolveConfigPath(configDir, cfg.Models.VAD),
-			Punc:    resolveConfigPath(configDir, cfg.Models.Punc),
-			ITN:     resolveConfigPath(configDir, cfg.Models.ITN),
-			LM:      resolveOptionalConfigPath(configDir, cfg.Models.LM),
+			ASR:    resolveConfigPath(configDir, cfg.Models.ASR),
+			Online: resolveConfigPath(configDir, cfg.Models.Online),
+			VAD:    resolveConfigPath(configDir, cfg.Models.VAD),
+			Punc:   resolveConfigPath(configDir, cfg.Models.Punc),
+			ITN:    resolveConfigPath(configDir, cfg.Models.ITN),
+			LM:     resolveOptionalConfigPath(configDir, cfg.Models.LM),
 		},
 		StartupTimeout: time.Duration(cfg.StartupTimeout) * time.Second,
 	})
+	if isEmbedded {
+		return asr.NewManagedSidecarProvider(manager, asr.Config{
+			Version: protocol.VersionV1Alpha1,
+			Timeout: 5 * time.Second,
+		}), nil
+	}
+
 	return asr.NewUpstreamProvider(manager, asr.UpstreamProviderConfig{
-		URL: asrWebsocketURL(cfg.Host, asrProxyPort),
+		URL:     asrWebsocketURL(cfg.Host, cfg.Port),
 		Mode:    cfg.Mode,
 		Timeout: 5 * time.Second,
 	}), nil

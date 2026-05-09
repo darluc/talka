@@ -1781,27 +1781,20 @@ struct ContentView: View {
         ZStack {
             RemoteMicBackground()
 
-            VStack(spacing: 0) {
-                RemoteMicControlSurface(
-                    viewModel: viewModel,
-                    isPressingMicrophone: isPressingMicrophone,
-                    showConnectionPanel: {
-                        isConnectionPanelPresented = true
-                    },
-                    togglePower: {
-                        Task {
-                            await viewModel.toggleConnectionPower()
-                        }
-                    },
-                    startRecording: startPressRecording,
-                    stopRecording: stopPressRecording
-                )
-
-                StatusMessageStack(viewModel: viewModel)
-            }
-            .padding(.horizontal, 18)
-            .padding(.top, 18)
-            .padding(.bottom, 14)
+            RemoteMicControlSurface(
+                viewModel: viewModel,
+                isPressingMicrophone: isPressingMicrophone,
+                showConnectionPanel: {
+                    isConnectionPanelPresented = true
+                },
+                togglePower: {
+                    Task {
+                        await viewModel.toggleConnectionPower()
+                    }
+                },
+                startRecording: startPressRecording,
+                stopRecording: stopPressRecording
+            )
 
             if isConnectionPanelPresented {
                 ConnectionPanelOverlay(
@@ -1868,10 +1861,10 @@ struct RemoteMicControlSurface: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 36, style: .continuous)
+            Rectangle()
                 .fill(.thinMaterial)
                 .overlay {
-                    RoundedRectangle(cornerRadius: 36, style: .continuous)
+                    Rectangle()
                         .fill(
                             RadialGradient(
                                 colors: [
@@ -1884,7 +1877,7 @@ struct RemoteMicControlSurface: View {
                             )
                         )
                 }
-                .shadow(color: Color.black.opacity(0.12), radius: 26, y: 18)
+                .ignoresSafeArea()
 
             VStack {
                 HStack(alignment: .top) {
@@ -2017,34 +2010,10 @@ private struct MicrophonePressButton: View {
     }
 }
 
-struct StatusMessageStack: View {
-    @ObservedObject var viewModel: RemoteMicShellViewModel
-
-    var body: some View {
-        VStack(spacing: 8) {
-            if let audioDiagnostic = viewModel.lastAudioDiagnostic {
-                Text(verbatim: "Audio diagnostic: \(audioDiagnostic)")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-                    .multilineTextAlignment(.center)
-            }
-
-            if let errorMessage = viewModel.lastErrorMessage {
-                Text(errorMessage)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .multilineTextAlignment(.center)
-            }
-        }
-        .frame(minHeight: 44)
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-    }
-}
-
 private struct ConnectionPanelOverlay: View {
     @ObservedObject var viewModel: RemoteMicShellViewModel
     var dismiss: () -> Void
+    @State private var isDebugExpanded = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -2104,14 +2073,11 @@ private struct ConnectionPanelOverlay: View {
                     }
                     .disabled(viewModel.isBusy)
 
-                    ConnectionActionButton(title: "PIN", symbolName: "number") {
-                        if viewModel.discoveredMacs.isEmpty {
-                            Task {
-                                await viewModel.discover()
-                            }
+                    ConnectionActionButton(title: "Debug", symbolName: "stethoscope") {
+                        withAnimation(.spring(response: 0.24, dampingFraction: 0.9)) {
+                            isDebugExpanded.toggle()
                         }
                     }
-                    .disabled(viewModel.isBusy)
                 }
 
                 if !viewModel.discoveredMacs.isEmpty {
@@ -2138,6 +2104,11 @@ private struct ConnectionPanelOverlay: View {
                     .disabled(viewModel.selectedMacID == nil || viewModel.pin.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isBusy)
                 }
 
+                if isDebugExpanded {
+                    DebugPanel(viewModel: viewModel)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+
                 Button(role: .destructive) {
                     Task {
                         await viewModel.forgetKnownMac()
@@ -2157,6 +2128,40 @@ private struct ConnectionPanelOverlay: View {
             .padding(.bottom, 12)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("connectionPanel")
+        }
+    }
+}
+
+struct DebugPanel: View {
+    @ObservedObject var viewModel: RemoteMicShellViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            DebugRow(title: "Audio", value: viewModel.lastAudioDiagnostic ?? "No audio diagnostics")
+            DebugRow(title: "Error", value: viewModel.lastErrorMessage ?? "No app errors")
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("debugPanel")
+    }
+}
+
+private struct DebugRow: View {
+    var title: String
+    var value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }

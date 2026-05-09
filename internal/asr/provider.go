@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"time"
 
 	"talka/internal/protocol"
 )
@@ -29,8 +30,22 @@ type SidecarProvider struct {
 	client *Client
 }
 
+type SidecarRuntimeManager interface {
+	EnsureRunning(ctx context.Context) error
+	URL() string
+}
+
+type ManagedSidecarProvider struct {
+	manager      SidecarRuntimeManager
+	clientConfig Config
+}
+
 func NewSidecarProvider(config Config) *SidecarProvider {
 	return &SidecarProvider{client: NewClient(config)}
+}
+
+func NewManagedSidecarProvider(manager SidecarRuntimeManager, config Config) *ManagedSidecarProvider {
+	return &ManagedSidecarProvider{manager: manager, clientConfig: config}
 }
 
 func (p *SidecarProvider) Transcribe(ctx context.Context, request Request) (Result, error) {
@@ -53,6 +68,70 @@ func (p *SidecarProvider) Transcribe(ctx context.Context, request Request) (Resu
 
 func (p *SidecarProvider) HealthCheck(ctx context.Context) error {
 	return p.client.HealthCheck(ctx)
+}
+
+func (p *ManagedSidecarProvider) Transcribe(ctx context.Context, request Request) (Result, error) {
+	if err := p.EnsureReady(ctx); err != nil {
+		return Result{}, err
+	}
+	return NewSidecarProvider(p.runtimeConfig()).Transcribe(ctx, request)
+}
+
+func (p *ManagedSidecarProvider) EnsureReady(ctx context.Context) error {
+	if p.manager == nil {
+		return NewClient(p.runtimeConfig()).HealthCheck(ctx)
+	}
+	if err := p.manager.EnsureRunning(ctx); err != nil {
+		return err
+	}
+	return NewClient(p.runtimeConfig()).HealthCheck(ctx)
+}
+
+func (p *ManagedSidecarProvider) HealthCheck(ctx context.Context) error {
+	return p.EnsureReady(ctx)
+}
+
+func (p *ManagedSidecarProvider) Shutdown(ctx context.Context) error {
+	type stopper interface {
+		Stop(ctx context.Context) error
+	}
+	if p.manager == nil {
+		return nil
+	}
+	if manager, ok := p.manager.(stopper); ok {
+		return manager.Stop(ctx)
+	}
+	return nil
+}
+
+func (p *ManagedSidecarProvider) ManagerStartupTimeout() int {
+	type startupTimeoutProvider interface {
+		StartupTimeout() time.Duration
+	}
+	if provider, ok := p.manager.(startupTimeoutProvider); ok {
+		return int(provider.StartupTimeout().Round(time.Second) / time.Second)
+	}
+	return 0
+}
+
+func (p *ManagedSidecarProvider) ManagerAlwaysEphemeral() bool {
+	type alwaysEphemeralProvider interface {
+		AlwaysEphemeral() bool
+	}
+	if provider, ok := p.manager.(alwaysEphemeralProvider); ok {
+		return provider.AlwaysEphemeral()
+	}
+	return false
+}
+
+func (p *ManagedSidecarProvider) runtimeConfig() Config {
+	config := p.clientConfig
+	if p.manager != nil {
+		if url := strings.TrimSpace(p.manager.URL()); url != "" {
+			config.URL = url
+		}
+	}
+	return config
 }
 
 func DefaultAudioMetadata() protocol.AudioMetadata {

@@ -22,6 +22,10 @@ final class TalkaIOSUITests: XCTestCase {
 
         let panel = app.otherElements["connectionPanel"]
         XCTAssertTrue(panel.waitForExistence(timeout: 2))
+        XCTAssertFalse(app.buttons["PIN"].exists)
+
+        app.buttons["Debug"].tap()
+        XCTAssertTrue(app.otherElements["debugPanel"].waitForExistence(timeout: 2))
 
         app.buttons["connectionPanelCloseButton"].tap()
 

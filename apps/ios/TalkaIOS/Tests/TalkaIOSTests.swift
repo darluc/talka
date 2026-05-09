@@ -265,7 +265,7 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertEqual(viewModel.lastAudioDiagnostic, "Microphone conversion failed: converter exploded")
     }
 
-    func testMicrophoneSectionRendersLastAudioDiagnosticSeparatelyFromGenericError() async throws {
+    func testDebugPanelRendersLastAudioDiagnosticSeparatelyFromGenericError() async throws {
         let streamClient = FailingAudioStreamClient(startError: RemoteMicFlowError.recordingFailed("bootstrap exploded"))
         let viewModel = RemoteMicShellViewModel(
             discoveryBrowser: FakeDiscoveryBrowser(),
@@ -280,10 +280,10 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertEqual(viewModel.lastErrorMessage, "bootstrap exploded")
         XCTAssertEqual(viewModel.lastAudioDiagnostic, "WebSocket bootstrap/sendAudioStart failed: bootstrap exploded")
 
-        let renderedStrings = renderedViewStrings(in: StatusMessageStack(viewModel: viewModel).body)
+        let renderedStrings = renderedViewStrings(in: DebugPanel(viewModel: viewModel).body)
 
         XCTAssertTrue(renderedStrings.contains("bootstrap exploded"), renderedStrings.joined(separator: "\n"))
-        XCTAssertTrue(renderedStrings.contains("Audio diagnostic: WebSocket bootstrap/sendAudioStart failed: bootstrap exploded"), renderedStrings.joined(separator: "\n"))
+        XCTAssertTrue(renderedStrings.contains("WebSocket bootstrap/sendAudioStart failed: bootstrap exploded"), renderedStrings.joined(separator: "\n"))
     }
 
     func testRemoteControlShellAvoidsInstructionalMainScreenLabels() {

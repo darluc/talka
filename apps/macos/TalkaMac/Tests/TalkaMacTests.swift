@@ -132,6 +132,109 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertEqual(pairing.expiryText, "01:15")
     }
 
+    func testEnsurePairingActiveStartsPINAndRefreshesAfterExpiry() async throws {
+        let now = ControlledNow(Date(timeIntervalSince1970: 1_700_000_000))
+        let firstExpiry = now.current.addingTimeInterval(120)
+        let secondExpiry = now.current.addingTimeInterval(300)
+        let client = FakeControlAPIClient(
+            statusResults: [
+                .success(.fixture(state: "running", pairingActive: true)),
+                .success(.fixture(state: "running", pairingActive: true)),
+            ],
+            devicesResults: [
+                .success([]),
+                .success([]),
+            ],
+            configResults: [
+                .success(.fixture()),
+                .success(.fixture()),
+            ],
+            pairingResults: [
+                .success(ControlPairingSession(pairingID: "pairing-1", pin: "123456", expiresAt: firstExpiry, expiresInSeconds: 120)),
+                .success(ControlPairingSession(pairingID: "pairing-2", pin: "654321", expiresAt: secondExpiry, expiresInSeconds: 300)),
+            ]
+        )
+        let viewModel = AppShellViewModel(client: client, nowProvider: { now.current })
+
+        await viewModel.ensurePairingActive()
+
+        XCTAssertEqual(viewModel.pairing?.pin, "123456")
+
+        now.current = firstExpiry.addingTimeInterval(1)
+        await viewModel.ensurePairingActive()
+
+        XCTAssertEqual(viewModel.pairing?.pin, "654321")
+    }
+
+    func testRefreshRuntimeStateUpdatesDevicesWithoutReloadingConfig() async throws {
+        let client = FakeControlAPIClient(
+            statusResults: [
+                .success(.fixture(state: "running")),
+                .success(.fixture(state: "running")),
+            ],
+            devicesResults: [
+                .success([]),
+                .success([ControlDevice(id: "device-2", name: "Darluc's iPhone", paired: true, lastSeenAt: Date(timeIntervalSince1970: 1_700_000_300))]),
+            ],
+            configResults: [.success(.fixture())]
+        )
+        let viewModel = AppShellViewModel(client: client)
+
+        await viewModel.refresh()
+        viewModel.config.llm.baseURL = "http://editing.local:11434"
+
+        await viewModel.refreshRuntimeState()
+
+        XCTAssertEqual(viewModel.devices.map(\.name), ["Darluc's iPhone"])
+        XCTAssertEqual(viewModel.serviceDisplayState, .paired)
+        XCTAssertEqual(viewModel.config.llm.baseURL, "http://editing.local:11434")
+        XCTAssertEqual(client.fetchConfigCalls, 1)
+    }
+
+    func testTickPairingCountdownPublishesRemainingTime() async throws {
+        let now = ControlledNow(Date(timeIntervalSince1970: 1_700_000_000))
+        let client = FakeControlAPIClient(
+            statusResults: [.success(.fixture(state: "running"))],
+            devicesResults: [.success([])],
+            configResults: [.success(.fixture())],
+            pairingResults: [.success(ControlPairingSession(pairingID: "pairing-1", pin: "123456", expiresAt: now.current.addingTimeInterval(90), expiresInSeconds: 90))]
+        )
+        let viewModel = AppShellViewModel(client: client, nowProvider: { now.current })
+
+        await viewModel.ensurePairingActive()
+        XCTAssertEqual(viewModel.pairingExpiryText, "01:30")
+
+        now.current = now.current.addingTimeInterval(15)
+        await viewModel.tickPairingCountdown()
+
+        XCTAssertEqual(viewModel.pairingExpiryText, "01:15")
+    }
+
+    func testOverallHealthRequiresServiceAIAndASRReady() async {
+        let healthy = ControlStatus.fixture(
+            state: "running",
+            asr: ControlASRStatus(provider: "funasr_embedded", runtimePath: "", sampleRate: 16000, mode: "2pass", ready: true, error: nil),
+            ollama: ControlOllamaStatus(baseURL: "http://localhost:11434", model: "qwen3:8b", timeoutSeconds: 30, ready: true, error: nil)
+        )
+        let unhealthyAI = ControlStatus.fixture(
+            state: "running",
+            asr: healthy.asr,
+            ollama: ControlOllamaStatus(baseURL: "http://localhost:11434", model: "qwen3:8b", timeoutSeconds: 30, ready: false, error: "offline")
+        )
+        let client = FakeControlAPIClient(
+            statusResults: [.success(healthy), .success(unhealthyAI)],
+            devicesResults: [.success([]), .success([])],
+            configResults: [.success(.fixture())]
+        )
+        let viewModel = AppShellViewModel(client: client)
+
+        await viewModel.refresh()
+        XCTAssertTrue(viewModel.isEverythingHealthy)
+
+        await viewModel.refreshRuntimeState()
+        XCTAssertFalse(viewModel.isEverythingHealthy)
+    }
+
     func testLiveControlAPIClientStartPairingDecodesFractionalSecondExpiry() async throws {
         let responseBody = #"""
         {
@@ -154,6 +257,51 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertEqual(session.pin, "123456")
         XCTAssertEqual(session.expiresInSeconds, 120)
         XCTAssertEqual(session.expiresAt.timeIntervalSince1970, 1_777_519_294.390_947, accuracy: 0.001)
+    }
+
+    func testLiveControlAPIClientFetchStatusDecodesRuntimeHealth() async throws {
+        let responseBody = #"""
+        {
+          "service_name": "Talka",
+          "state": "running",
+          "config_path": "/tmp/talka.yaml",
+          "uptime_seconds": 12,
+          "device_count": 1,
+          "pairing_active": true,
+          "asr": {
+            "provider": "funasr_external",
+            "runtime_path": "",
+            "sample_rate": 16000,
+            "mode": "2pass",
+            "ready": true
+          },
+          "ollama": {
+            "base_url": "http://localhost:11434",
+            "model": "qwen3:8b",
+            "timeout_seconds": 30,
+            "ready": false,
+            "error": "ollama unavailable"
+          },
+          "permissions": {
+            "accessibility": "unknown"
+          }
+        }
+        """#
+
+        let client = makeLiveClient { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/v1/status")
+            return try Self.httpResponse(body: responseBody)
+        }
+
+        let status = try await client.fetchStatus()
+
+        XCTAssertEqual(status.asr?.provider, "funasr_external")
+        XCTAssertEqual(status.asr?.ready, true)
+        XCTAssertEqual(status.ollama?.baseURL, "http://localhost:11434")
+        XCTAssertEqual(status.ollama?.ready, false)
+        XCTAssertEqual(status.ollama?.error, "ollama unavailable")
+        XCTAssertEqual(status.permissions?.accessibility, "unknown")
     }
 
     func testLiveControlAPIClientFetchDevicesDecodesFractionalSecondLastSeenAt() async throws {
@@ -193,11 +341,17 @@ final class TalkaMacTests: XCTestCase {
         await viewModel.refresh()
         viewModel.config.llm.baseURL = "http://localhost:11434"
         viewModel.config.llm.model = "qwen3:8b"
+        viewModel.config.asr.host = "192.168.1.10"
+        viewModel.config.asr.port = 10096
+        viewModel.config.asr.mode = "2pass"
         viewModel.config.logging.captureAudio = true
         await viewModel.saveConfig()
 
         XCTAssertEqual(client.savedConfig?.llm.baseURL, "http://localhost:11434")
         XCTAssertEqual(client.savedConfig?.llm.model, "qwen3:8b")
+        XCTAssertEqual(client.savedConfig?.asr.host, "192.168.1.10")
+        XCTAssertEqual(client.savedConfig?.asr.port, 10096)
+        XCTAssertEqual(client.savedConfig?.asr.mode, "2pass")
         XCTAssertEqual(client.savedConfig?.logging.captureAudio, true)
         XCTAssertNil(viewModel.lastErrorMessage)
     }
@@ -766,6 +920,7 @@ private final class FakeControlAPIClient: ControlAPIClient {
     private(set) var savedConfig: ControlConfig?
     private(set) var forgottenDeviceIDs: [String] = []
     private(set) var accessibilityOpenCalls = 0
+    private(set) var fetchConfigCalls = 0
 
     init(
         statusResults: [Result<ControlStatus, Error>] = [.success(.fixture())],
@@ -794,7 +949,8 @@ private final class FakeControlAPIClient: ControlAPIClient {
     }
 
     func fetchConfig() async throws -> ControlConfig {
-        try next(from: &configResults)
+        fetchConfigCalls += 1
+        return try next(from: &configResults)
     }
 
     func saveConfig(_ config: ControlConfig) async throws -> ControlConfig {
@@ -834,14 +990,23 @@ private final class ControlledNow {
 }
 
 private extension ControlStatus {
-    static func fixture(state: String = "running", pairingActive: Bool = false) -> ControlStatus {
+    static func fixture(
+        state: String = "running",
+        pairingActive: Bool = false,
+        asr: ControlASRStatus? = nil,
+        ollama: ControlOllamaStatus? = nil,
+        permissions: ControlPermissionsStatus? = nil
+    ) -> ControlStatus {
         ControlStatus(
             serviceName: "Talka",
             state: state,
             configPath: "/tmp/talka.yaml",
             uptimeSeconds: 12,
             deviceCount: pairingActive ? 1 : 0,
-            pairingActive: pairingActive
+            pairingActive: pairingActive,
+            asr: asr,
+            ollama: ollama,
+            permissions: permissions
         )
     }
 }

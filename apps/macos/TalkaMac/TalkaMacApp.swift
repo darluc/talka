@@ -40,6 +40,22 @@ enum ASRProviderOption: String, CaseIterable, Identifiable {
     }
 }
 
+enum ASRModeOption: String, CaseIterable, Identifiable {
+    case embedded = "funasr_embedded"
+    case external = "funasr_external"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .embedded:
+            return "Embedded"
+        case .external:
+            return "External"
+        }
+    }
+}
+
 enum ServiceDisplayState: String, Equatable {
     case listening
     case paired
@@ -205,6 +221,47 @@ struct ControlStatus: Equatable {
     var uptimeSeconds: Int
     var deviceCount: Int
     var pairingActive: Bool
+    var asr: ControlASRStatus?
+    var ollama: ControlOllamaStatus?
+    var permissions: ControlPermissionsStatus?
+}
+
+struct ControlASRStatus: Codable, Equatable {
+    var provider: String
+    var runtimePath: String
+    var sampleRate: Int
+    var mode: String
+    var ready: Bool
+    var error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case runtimePath = "runtime_path"
+        case sampleRate = "sample_rate"
+        case mode
+        case ready
+        case error
+    }
+}
+
+struct ControlOllamaStatus: Codable, Equatable {
+    var baseURL: String
+    var model: String
+    var timeoutSeconds: Int
+    var ready: Bool
+    var error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case baseURL = "base_url"
+        case model
+        case timeoutSeconds = "timeout_seconds"
+        case ready
+        case error
+    }
+}
+
+struct ControlPermissionsStatus: Codable, Equatable {
+    var accessibility: String
 }
 
 struct ControlDevice: Identifiable, Equatable {
@@ -409,6 +466,9 @@ private struct ControlStatusResponse: Decodable {
     var uptimeSeconds: Int
     var deviceCount: Int
     var pairingActive: Bool
+    var asr: ControlASRStatus?
+    var ollama: ControlOllamaStatus?
+    var permissions: ControlPermissionsStatus?
 
     enum CodingKeys: String, CodingKey {
         case serviceName = "service_name"
@@ -417,6 +477,9 @@ private struct ControlStatusResponse: Decodable {
         case uptimeSeconds = "uptime_seconds"
         case deviceCount = "device_count"
         case pairingActive = "pairing_active"
+        case asr
+        case ollama
+        case permissions
     }
 }
 
@@ -553,7 +616,10 @@ struct LiveControlAPIClient: ControlAPIClient {
             configPath: response.configPath,
             uptimeSeconds: response.uptimeSeconds,
             deviceCount: response.deviceCount,
-            pairingActive: response.pairingActive
+            pairingActive: response.pairingActive,
+            asr: response.asr,
+            ollama: response.ollama,
+            permissions: response.permissions
         )
     }
 
@@ -705,6 +771,7 @@ final class AppShellViewModel: ObservableObject {
     @Published private(set) var devices: [ControlDevice] = []
     @Published var config: ControlConfig = .placeholder
     @Published private(set) var pairing: PairingViewModel?
+    @Published private(set) var pairingExpiryText = "--:--"
     @Published private(set) var accessibilityGuidance: AccessibilityGuidance?
     @Published private(set) var injectionRecovery: InjectionRecovery?
     @Published private(set) var isBusy = false
@@ -740,9 +807,16 @@ final class AppShellViewModel: ObservableObject {
         "Talka \(serviceDisplayState.label)"
     }
 
+    var isEverythingHealthy: Bool {
+        let serviceReady = serviceDisplayState == .listening || serviceDisplayState == .paired
+        let asrReady = status?.asr?.ready ?? false
+        let aiReady = status?.ollama?.ready ?? false
+        return serviceReady && asrReady && aiReady
+    }
+
     var pairingStatusText: String {
         if let pairing {
-            return pairing.isExpired ? "PIN expired" : "PIN expires in \(pairing.expiryText)"
+            return pairing.isExpired ? "PIN expired" : "PIN expires in \(pairingExpiryText)"
         }
         return "No active pairing PIN"
     }
@@ -802,6 +876,26 @@ final class AppShellViewModel: ObservableObject {
         }
     }
 
+    func refreshRuntimeState() async {
+        do {
+            let fetchedStatus = try await client.fetchStatus()
+            async let devices = client.fetchDevices()
+            let fetchedDevices = try await devices
+            let sortedDevices = fetchedDevices.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+
+            self.status = fetchedStatus
+            self.devices = sortedDevices
+            self.serviceDisplayState = ServiceDisplayState(apiState: fetchedStatus.state, deviceCount: sortedDevices.count)
+            self.injectionRecovery = nil
+            self.lastUpdated = nowProvider()
+            self.lastErrorMessage = serviceDisplayState == .error ? serviceDisplayState.helpText : nil
+        } catch let error as ControlAPIClientError {
+            handle(error: error)
+        } catch {
+            handle(error: ControlAPIClientError.transport(error.localizedDescription))
+        }
+    }
+
     func recoverService() async {
         await refresh()
     }
@@ -832,6 +926,7 @@ final class AppShellViewModel: ObservableObject {
         do {
             let session = try await client.startPairing()
             pairing = PairingViewModel(session: session, nowProvider: nowProvider)
+            pairingExpiryText = pairing?.expiryText ?? "--:--"
             lastErrorMessage = nil
             lastUpdated = nowProvider()
             await refresh()
@@ -839,6 +934,27 @@ final class AppShellViewModel: ObservableObject {
             handle(error: error)
         } catch {
             handle(error: ControlAPIClientError.transport(error.localizedDescription))
+        }
+    }
+
+    func ensurePairingActive() async {
+        if let pairing {
+            pairing.refreshCountdown()
+            pairingExpiryText = pairing.expiryText
+            guard pairing.isExpired else {
+                return
+            }
+        }
+
+        await startPairing()
+    }
+
+    func tickPairingCountdown() async {
+        guard let pairing else { return }
+        pairing.refreshCountdown()
+        pairingExpiryText = pairing.expiryText
+        if pairing.isExpired {
+            await ensurePairingActive()
         }
     }
 
@@ -865,7 +981,17 @@ final class AppShellViewModel: ObservableObject {
             try await client.forgetDevice(id: id)
             devices.removeAll { $0.id == id }
             if let status {
-                self.status = ControlStatus(serviceName: status.serviceName, state: status.state, configPath: status.configPath, uptimeSeconds: status.uptimeSeconds, deviceCount: max(0, status.deviceCount - 1), pairingActive: status.pairingActive)
+                self.status = ControlStatus(
+                    serviceName: status.serviceName,
+                    state: status.state,
+                    configPath: status.configPath,
+                    uptimeSeconds: status.uptimeSeconds,
+                    deviceCount: max(0, status.deviceCount - 1),
+                    pairingActive: status.pairingActive,
+                    asr: status.asr,
+                    ollama: status.ollama,
+                    permissions: status.permissions
+                )
             }
             serviceDisplayState = status.map { ServiceDisplayState(apiState: $0.state, deviceCount: devices.count) } ?? serviceDisplayState
             lastUpdated = nowProvider()
@@ -958,14 +1084,14 @@ struct TalkaMacApp: App {
     }
 
     var body: some Scene {
-        MenuBarExtra(viewModel.menuBarTitle, systemImage: viewModel.serviceDisplayState.symbolName) {
-            MenuBarContentView(viewModel: viewModel, serverManager: serverManager)
-                .frame(minWidth: ShellMetrics.minUtilityWidth)
+        MenuBarExtra {
+            MenuBarContentView()
                 .task {
                     await viewModel.refreshIfNeeded()
                 }
+        } label: {
+            MenuBarIconView(isHealthy: viewModel.isEverythingHealthy)
         }
-        .menuBarExtraStyle(.window)
 
         Settings {
             SettingsShellView(viewModel: viewModel)
@@ -994,66 +1120,40 @@ struct TalkaMacApp: App {
 }
 
 struct MenuBarContentView: View {
-    @ObservedObject var viewModel: AppShellViewModel
-    @ObservedObject var serverManager: ServerProcessManager
-    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        SettingsLink {
+            Text("Settings")
+        }
+
+        Divider()
+
+        Button("Quit") {
+            NSApplication.shared.terminate(nil)
+        }
+    }
+}
+
+struct MenuBarIconView: View {
+    var isHealthy: Bool
 
     var body: some View {
-        Group {
-            if serverManager.isRunning {
-                VStack(alignment: .leading, spacing: ShellMetrics.panelSpacing) {
-                    StatusSummaryCard(viewModel: viewModel)
+        ZStack(alignment: .topTrailing) {
+            Image("TrayIcon")
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 15, height: 15)
+                .clipped()
 
-                    VStack(alignment: .leading, spacing: ShellMetrics.sectionSpacing) {
-                        Button("Refresh Status") {
-                            Task {
-                                await viewModel.refresh()
-                            }
-                        }
-
-                        Button("Start Pairing") {
-                            openWindow(id: ShellWindowID.pairing)
-                            Task {
-                                await viewModel.startPairing()
-                            }
-                        }
-
-                        Button("Accessibility Guidance") {
-                            Task {
-                                await viewModel.requestAccessibilityGuidance()
-                            }
-                        }
-
-                        Button("Diagnostics") {
-                            openWindow(id: ShellWindowID.diagnostics)
-                        }
-
-                        SettingsLink {
-                            Text("Settings")
-                        }
-                    }
-
-                    if let actionTitle = viewModel.recoveryActionTitle {
-                        Button(actionTitle) {
-                            Task {
-                                await viewModel.performRecoveryAction()
-                            }
-                        }
-                    }
-                }
-                .padding(ShellMetrics.contentPadding)
-            } else {
-                VStack(spacing: 8) {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                    Text("Talka Server Starting...")
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(minWidth: ShellMetrics.minUtilityWidth)
-                .padding(ShellMetrics.contentPadding)
-            }
+            Circle()
+                .fill(isHealthy ? Color.green : Color.secondary.opacity(0.45))
+                .frame(width: 5, height: 5)
+                .offset(x: 1, y: -1)
         }
+        .frame(width: 18, height: 18)
+        .fixedSize()
+        .contentShape(Rectangle())
+        .accessibilityLabel(isHealthy ? "Talka ready" : "Talka not ready")
     }
 }
 
@@ -1061,161 +1161,329 @@ struct SettingsShellView: View {
     @ObservedObject var viewModel: AppShellViewModel
     @Environment(\.openWindow) private var openWindow
 
-    private var isEmbeddedProvider: Bool {
-        let provider = viewModel.config.asr.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return provider == "funasr_embedded" || provider == "funasr_onnx"
-    }
-
-    private var isExternalProvider: Bool {
-        viewModel.config.asr.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "funasr_external"
-    }
-
-    private var isContainerProvider: Bool {
-        viewModel.config.asr.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "funasr_container"
-    }
-
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: ShellMetrics.panelSpacing) {
-                StatusSummaryCard(viewModel: viewModel)
+                SettingsStatusPINPanel(viewModel: viewModel)
+                SettingsInterfacesPanel(viewModel: viewModel)
+                SettingsDevicesPanel(viewModel: viewModel)
+                SettingsFooter(viewModel: viewModel) {
+                    openWindow(id: ShellWindowID.diagnostics)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(ShellMetrics.contentPadding)
+        }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            Task {
+                await viewModel.tickPairingCountdown()
+            }
+        }
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+            Task {
+                await viewModel.refreshRuntimeState()
+            }
+        }
+        .task {
+            await viewModel.ensurePairingActive()
+        }
+    }
+}
 
-                GroupBox("Runtime") {
-                    VStack(alignment: .leading, spacing: ShellMetrics.sectionSpacing) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("ASR Provider")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            Picker("ASR Provider", selection: $viewModel.config.asr.provider) {
-                                ForEach(ASRProviderOption.allCases) { option in
-                                    Text(option.title).tag(option.rawValue)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                        }
-                        LabeledField(title: "ASR Runtime Path", text: $viewModel.config.asr.runtimePath)
-                        LabeledField(title: "ASR Host", text: $viewModel.config.asr.host)
-                        LabeledField(
-                            title: "ASR Port",
-                            text: Binding(
-                                get: { String(viewModel.config.asr.port) },
-                                set: { viewModel.config.asr.port = Int($0) ?? viewModel.config.asr.port }
-                            )
-                        )
-                        LabeledField(title: "ASR Mode", text: $viewModel.config.asr.mode)
-                        if isEmbeddedProvider || isContainerProvider {
-                            LabeledField(
-                                title: "ASR Startup Timeout",
-                                text: Binding(
-                                    get: { String(viewModel.config.asr.startupTimeoutSeconds) },
-                                    set: { viewModel.config.asr.startupTimeoutSeconds = Int($0) ?? viewModel.config.asr.startupTimeoutSeconds }
-                                )
-                            )
-                        }
-                        if isEmbeddedProvider || isContainerProvider {
-                            LabeledField(title: "ASR Model", text: $viewModel.config.asr.models.asr)
-                            LabeledField(title: "ASR Online Model", text: $viewModel.config.asr.models.online)
-                            LabeledField(title: "VAD Model", text: $viewModel.config.asr.models.vad)
-                            LabeledField(title: "Punctuation Model", text: $viewModel.config.asr.models.punc)
-                            LabeledField(title: "ITN Model", text: $viewModel.config.asr.models.itn)
-                            LabeledField(title: "LM Model", text: $viewModel.config.asr.models.lm)
-                            LabeledField(title: "Hotword File", text: $viewModel.config.asr.hotwordPath)
-                        }
-                        if isContainerProvider {
-                            LabeledField(title: "ASR Container Image", text: $viewModel.config.asr.containerImage)
-                            LabeledField(title: "ASR Container Name", text: $viewModel.config.asr.containerName)
-                            LabeledField(title: "ASR Download Dir", text: $viewModel.config.asr.downloadDir)
-                        }
-                        if isExternalProvider {
-                            Text("External FunASR mode connects directly to the configured host and port.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        LabeledField(title: "Ollama Base URL", text: $viewModel.config.llm.baseURL)
-                        LabeledField(title: "Ollama Model", text: $viewModel.config.llm.model)
-                        LabeledField(title: "Insertion Mode", text: $viewModel.config.injection.mode)
-                    }
-                    .padding(.top, 4)
+struct SettingsStatusPINPanel: View {
+    @ObservedObject var viewModel: AppShellViewModel
+
+    private var title: String {
+        switch viewModel.serviceDisplayState {
+        case .listening, .paired:
+            return "Talka is ready"
+        default:
+            return "Talka is \(viewModel.serviceDisplayState.label.lowercased())"
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(viewModel.isEverythingHealthy ? Color.green : viewModel.serviceDisplayState.tint)
+                        .frame(width: 12, height: 12)
+                    Text(title)
+                        .font(.headline)
                 }
 
-                GroupBox("Permissions") {
-                    VStack(alignment: .leading, spacing: ShellMetrics.sectionSpacing) {
-                        Text("Talka needs Accessibility access before the Go service can insert final text into other apps.")
-                            .foregroundStyle(.secondary)
-                        Button("Open Accessibility Guidance") {
-                            Task {
-                                await viewModel.requestAccessibilityGuidance()
-                            }
-                        }
-                        AccessibilityGuidanceView(guidance: viewModel.accessibilityGuidance)
-                    }
-                    .padding(.top, 4)
-                }
-
-                GroupBox("Devices") {
-                    VStack(alignment: .leading, spacing: ShellMetrics.sectionSpacing) {
-                        if viewModel.devices.isEmpty {
-                            Text("No paired devices are currently reported by the control API.")
-                                .foregroundStyle(.secondary)
-                        } else {
-                            ForEach(viewModel.devices) { device in
-                                HStack(alignment: .firstTextBaseline) {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(device.name)
-                                            .font(.headline)
-                                        Text(device.id)
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                        Text(device.paired ? "Trusted device" : "Unpaired")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Button("Forget") {
-                                        Task {
-                                            await viewModel.forgetDevice(id: device.id)
-                                        }
-                                    }
-                                }
-                                Divider()
-                            }
-                        }
-                    }
-                    .padding(.top, 4)
-                }
-
-                GroupBox("Logging") {
-                    VStack(alignment: .leading, spacing: ShellMetrics.sectionSpacing) {
-                        Toggle("Capture audio", isOn: $viewModel.config.logging.captureAudio)
-                        Toggle("Capture transcripts", isOn: $viewModel.config.logging.captureTranscript)
-                        Toggle("Debug logging", isOn: Binding(
-                            get: { viewModel.config.logging.level == "debug" },
-                            set: { viewModel.config.logging.level = $0 ? "debug" : "info" }
-                        ))
-                    }
-                    .padding(.top, 4)
-                }
-
-                HStack {
-                    Button("Save Configuration") {
+                HStack(spacing: 8) {
+                    Button("Service \(viewModel.serviceDisplayState == .unavailable ? "unavailable" : "listening")") {
                         Task {
-                            await viewModel.saveConfig()
+                            await viewModel.recoverService()
                         }
                     }
+                    .buttonStyle(StatusPillButtonStyle(tint: viewModel.serviceDisplayState.tint))
 
-                    Button("Diagnostics") {
-                        openWindow(id: ShellWindowID.diagnostics)
+                    Button("Accessibility OK") {
+                        Task {
+                            await viewModel.requestAccessibilityGuidance()
+                        }
                     }
+                    .buttonStyle(StatusPillButtonStyle(tint: .green))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-                    Spacer()
+            Spacer(minLength: 24)
 
-                    if viewModel.isBusy {
-                        ProgressView()
-                            .controlSize(.small)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(viewModel.pairing?.pin ?? "------")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .kerning(4)
+                Text(viewModel.pairing.map { _ in "Refreshes in \(viewModel.pairingExpiryText)" } ?? "Fetching PIN")
+                    .font(.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 240, alignment: .leading)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+struct SettingsInterfacesPanel: View {
+    @ObservedObject var viewModel: AppShellViewModel
+
+    private var isExternalASR: Bool {
+        viewModel.config.asr.provider == ASRModeOption.external.rawValue
+    }
+
+    private var aiHealth: (detail: String, tint: Color) {
+        guard let ollama = viewModel.status?.ollama else {
+            return ("Unknown", .secondary)
+        }
+        if ollama.ready {
+            return ("Healthy · \(ollama.model)", .green)
+        }
+        return (ollama.error.map { "Error · \($0)" } ?? "Unavailable", .red)
+    }
+
+    private var asrHealth: (detail: String, tint: Color) {
+        guard let asr = viewModel.status?.asr else {
+            return ("Unknown", .secondary)
+        }
+        if asr.ready {
+            return ("Healthy · \(viewModel.config.asr.host):\(viewModel.config.asr.port)", .green)
+        }
+        return (asr.error.map { "Error · \($0)" } ?? "Unavailable", .red)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: ShellMetrics.sectionSpacing) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Interfaces")
+                    .font(.headline)
+                Text("Configure AI cleanup and external ASR endpoints.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
+                GridRow {
+                    LabeledField(title: "AI Endpoint", text: $viewModel.config.llm.baseURL)
+                    LabeledField(title: "AI Model", text: $viewModel.config.llm.model)
+                    LabeledField(
+                        title: "AI Timeout",
+                        text: Binding(
+                            get: { String(viewModel.config.llm.timeoutSeconds) },
+                            set: { viewModel.config.llm.timeoutSeconds = Int($0) ?? viewModel.config.llm.timeoutSeconds }
+                        )
+                    )
+                }
+                GridRow {
+                    LabeledField(title: "ASR Endpoint", text: $viewModel.config.asr.host, isDisabled: !isExternalASR)
+                    LabeledField(
+                        title: "ASR Port",
+                        text: Binding(
+                            get: { String(viewModel.config.asr.port) },
+                            set: { viewModel.config.asr.port = Int($0) ?? viewModel.config.asr.port }
+                        ),
+                        isDisabled: !isExternalASR
+                    )
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("ASR Mode")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker("ASR Mode", selection: $viewModel.config.asr.provider) {
+                            ForEach(ASRModeOption.allCases) { option in
+                                Text(option.title).tag(option.rawValue)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
                     }
                 }
             }
-            .padding(ShellMetrics.contentPadding)
+
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                HealthStatusTile(
+                    title: "AI API",
+                    detail: aiHealth.detail,
+                    tint: aiHealth.tint
+                )
+                HealthStatusTile(
+                    title: "ASR API",
+                    detail: asrHealth.detail,
+                    tint: asrHealth.tint
+                )
+            }
         }
+        .padding(16)
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+struct SettingsDevicesPanel: View {
+    @ObservedObject var viewModel: AppShellViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: ShellMetrics.sectionSpacing) {
+            HStack {
+                Text("Connected Devices")
+                    .font(.headline)
+                Spacer()
+                Text("\(viewModel.devices.count) devices")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(.green.opacity(0.12), in: Capsule())
+            }
+
+            if viewModel.devices.isEmpty {
+                Text("No connected devices.")
+                    .foregroundStyle(.secondary)
+            } else {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    ForEach(viewModel.devices) { device in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(device.name)
+                                .font(.headline)
+                            Text(device.lastSeenAt.map(Self.lastSeenText(for:)) ?? "Connected")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(.quaternary)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private static func lastSeenText(for date: Date) -> String {
+        "Connected \(timeFormatter.string(from: date))"
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter
+    }()
+}
+
+struct SettingsFooter: View {
+    @ObservedObject var viewModel: AppShellViewModel
+    var openDiagnostics: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text("Last updated \(viewModel.lastUpdated.map(Self.timestampFormatter.string(from:)) ?? "never") · Config: \(viewModel.status?.configPath.isEmpty == false ? viewModel.status!.configPath : viewModel.config.path)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer()
+
+            Button("Diagnostics", action: openDiagnostics)
+            Button("Reset Changes") {
+                Task {
+                    await viewModel.refresh()
+                }
+            }
+            Button("Save") {
+                Task {
+                    await viewModel.saveConfig()
+                }
+            }
+            .buttonStyle(.borderedProminent)
+
+            if viewModel.isBusy {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private static let timestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .medium
+        return formatter
+    }()
+}
+
+struct HealthStatusTile: View {
+    var title: String
+    var detail: String
+    var tint: Color
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .font(.headline)
+            Spacer()
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Circle()
+                .fill(tint)
+                .frame(width: 9, height: 9)
+        }
+        .padding(10)
+        .background(.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(.quaternary)
+        }
+    }
+}
+
+struct StatusPillButtonStyle: ButtonStyle {
+    var tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.caption)
+            .foregroundStyle(tint)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(tint.opacity(configuration.isPressed ? 0.2 : 0.12), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(tint.opacity(0.35))
+            }
     }
 }
 
@@ -1395,6 +1663,7 @@ struct RecoveryStateView: View {
 struct LabeledField: View {
     let title: String
     @Binding var text: String
+    var isDisabled = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -1403,6 +1672,8 @@ struct LabeledField: View {
                 .foregroundStyle(.secondary)
             TextField(title, text: $text)
                 .textFieldStyle(.roundedBorder)
+                .disabled(isDisabled)
+                .opacity(isDisabled ? 0.55 : 1)
         }
     }
 }

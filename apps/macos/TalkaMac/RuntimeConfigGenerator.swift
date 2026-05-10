@@ -33,9 +33,9 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
 
 		yaml = removeMalformedEmbeddedResourceLines(from: yaml)
 		yaml = ensureEmbeddedASRProvider(in: yaml)
-		yaml = replaceYAMLValue(named: "runtime_path", indent: " ", with: runtimeURL.path, in: yaml)
-		yaml = replaceYAMLValue(named: "funasr_binary_path", indent: " ", with: funasrBinaryURL.path, in: yaml)
-		yaml = replaceYAMLValue(named: "hotword_path", indent: " ", with: hotwordsPath, in: yaml)
+		yaml = replaceYAMLValue(named: "runtime_path", indent: "  ", with: runtimeURL.path, in: yaml)
+		yaml = replaceYAMLValue(named: "funasr_binary_path", indent: "  ", with: funasrBinaryURL.path, in: yaml)
+		yaml = replaceYAMLValue(named: "hotword_path", indent: "  ", with: hotwordsPath, in: yaml)
         yaml = replaceYAMLValue(named: "asr", indent: "    ", with: modelsURL.appendingPathComponent("paraformer-zh-onnx").path, in: yaml)
         yaml = replaceYAMLValue(named: "online", indent: "    ", with: modelsURL.appendingPathComponent("paraformer-zh-online-onnx").path, in: yaml)
         yaml = replaceYAMLValue(named: "vad", indent: "    ", with: modelsURL.appendingPathComponent("fsmn-vad-onnx").path, in: yaml)

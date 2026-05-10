@@ -4,6 +4,35 @@ import SwiftUI
 import XCTest
 @testable import TalkaIOS
 
+private func pairedMacIdentity(
+    deviceID: String = "iphone-1",
+    deviceName: String = "Darluc's iPhone",
+    serverDeviceID: String? = "mac-1",
+    serverDeviceName: String? = "Darluc's MacBook Pro",
+    hostName: String? = nil,
+    port: Int? = nil
+) -> PairedMacIdentity {
+    PairedMacIdentity(
+        deviceID: deviceID,
+        deviceName: deviceName,
+        hostName: hostName,
+        port: port,
+        serverDeviceID: serverDeviceID,
+        serverDeviceName: serverDeviceName
+    )
+}
+
+private func pcmFrame(sample: Int16) -> Data {
+    var data = Data()
+    data.reserveCapacity(TalkaAudioFormat.frameByteCount)
+    let sampleCount = TalkaAudioFormat.frameByteCount / MemoryLayout<Int16>.size
+    for _ in 0..<sampleCount {
+        var littleEndianSample = sample.littleEndian
+        withUnsafeBytes(of: &littleEndianSample) { data.append(contentsOf: $0) }
+    }
+    return data
+}
+
 @MainActor
 final class TalkaIOSTests: XCTestCase {
     func testAVAudioConverterProducesSixteenKilohertzMonoPCM() throws {
@@ -58,10 +87,33 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertEqual(framer.bufferedByteCount, 0)
     }
 
-    func testAudioWaveArcAmplitudeIsClampedInsideButtonBounds() {
-        XCTAssertEqual(AudioWaveArcMetrics.amplitude(for: -0.5), AudioWaveArcMetrics.minimumAmplitude)
-        XCTAssertEqual(AudioWaveArcMetrics.amplitude(for: 0), AudioWaveArcMetrics.minimumAmplitude)
-        XCTAssertEqual(AudioWaveArcMetrics.amplitude(for: 99), AudioWaveArcMetrics.maximumAmplitude)
+    func testAudioBreathingRingIntensityIsClampedInsideButtonBounds() {
+        XCTAssertEqual(AudioBreathingRingMetrics.intensity(for: -0.5), AudioBreathingRingMetrics.minimumIntensity)
+        XCTAssertEqual(AudioBreathingRingMetrics.intensity(for: 0), AudioBreathingRingMetrics.minimumIntensity)
+        XCTAssertEqual(AudioBreathingRingMetrics.intensity(for: 99), AudioBreathingRingMetrics.maximumIntensity)
+    }
+
+    func testAudioBreathingRingRadiusExpansionUsesWiderAudioRange() {
+        XCTAssertEqual(
+            AudioBreathingRingMetrics.radiusExpansion(for: 1),
+            AudioBreathingRingMetrics.baseRadiusExpansion + 15
+        )
+    }
+
+    func testPCMVolumeLevelTracksSampleAmplitude() {
+        let quietFrame = pcmFrame(sample: 1_024)
+        let loudFrame = pcmFrame(sample: 24_576)
+
+        XCTAssertEqual(PCMVolumeLevel.level(for: Data(repeating: 0, count: TalkaAudioFormat.frameByteCount)), 0)
+        XCTAssertLessThan(PCMVolumeLevel.level(for: quietFrame), PCMVolumeLevel.level(for: loudFrame))
+        XCTAssertGreaterThan(PCMVolumeLevel.level(for: loudFrame), 0.7)
+    }
+
+    func testPCMVolumeLevelHandlesSlicedPCMFrames() {
+        let combinedFrames = Data(repeating: 0, count: TalkaAudioFormat.frameByteCount) + pcmFrame(sample: 24_576)
+        let slicedLoudFrame = combinedFrames.suffix(TalkaAudioFormat.frameByteCount)
+
+        XCTAssertGreaterThan(PCMVolumeLevel.level(for: slicedLoudFrame), 0.7)
     }
 
     func testAudioStreamClientSendsStartFramesAndStopWithStrictSequences() async {
@@ -245,7 +297,8 @@ final class TalkaIOSTests: XCTestCase {
 
         XCTAssertEqual(viewModel.recordingState, RemoteMicRecordingState.recording)
         XCTAssertEqual(viewModel.lastAudioDiagnostic, "audio frames flowing; seq=1")
-        XCTAssertEqual(viewModel.audioLevel, 1)
+        XCTAssertGreaterThan(viewModel.audioLevel, 0)
+        XCTAssertLessThan(viewModel.audioLevel, 0.02)
     }
 
     func testMicrophoneConversionFailuresSurfaceARecordingDiagnostic() async throws {
@@ -296,7 +349,7 @@ final class TalkaIOSTests: XCTestCase {
         let viewModel = RemoteMicShellViewModel(
             discoveryBrowser: FakeDiscoveryBrowser(),
             sessionClient: FakeRemoteSessionClient(),
-            identityStore: FakePairedIdentityStore(initialIdentity: PairedMacIdentity(deviceID: "mac-1", deviceName: "Darluc's MacBook Pro"))
+            identityStore: FakePairedIdentityStore(initialIdentity: pairedMacIdentity())
         )
 
         let renderedStrings = renderedViewStrings(in: RemoteMicControlSurface(
@@ -311,10 +364,61 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertFalse(renderedStrings.contains("Talka"), renderedStrings.joined(separator: "\n"))
         XCTAssertFalse(renderedStrings.contains("Connected"), renderedStrings.joined(separator: "\n"))
         XCTAssertFalse(renderedStrings.contains("Hold to Talk"), renderedStrings.joined(separator: "\n"))
+        XCTAssertFalse(renderedStrings.contains("Darluc's MacBook Pro"), renderedStrings.joined(separator: "\n"))
+    }
+
+    func testConnectionPanelIsSettingsOnlyWithoutPairingOrForgetControls() {
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(),
+            identityStore: FakePairedIdentityStore(initialIdentity: pairedMacIdentity())
+        )
+
+        let renderedStrings = renderedViewStrings(in: ConnectionPanelOverlay(viewModel: viewModel, dismiss: {}).body)
+
+        XCTAssertTrue(renderedStrings.contains("Darluc's MacBook Pro"), renderedStrings.joined(separator: "\n"))
+        XCTAssertTrue(renderedStrings.contains("Debug"), renderedStrings.joined(separator: "\n"))
+        XCTAssertFalse(renderedStrings.contains("Discover"), renderedStrings.joined(separator: "\n"))
+        XCTAssertFalse(renderedStrings.contains("PIN"), renderedStrings.joined(separator: "\n"))
+        XCTAssertFalse(renderedStrings.contains("Connect"), renderedStrings.joined(separator: "\n"))
+        XCTAssertFalse(renderedStrings.contains("Forget Device"), renderedStrings.joined(separator: "\n"))
+    }
+
+    func testConnectionPanelShowsMacServiceNameInsteadOfIOSDeviceName() {
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(),
+            identityStore: FakePairedIdentityStore(initialIdentity: PairedMacIdentity(
+                deviceID: "iphone-1",
+                deviceName: "Darluc's iPhone",
+                serverDeviceID: "mac-1",
+                serverDeviceName: "Darluc's MacBook Pro"
+            ))
+        )
+
+        let renderedStrings = renderedViewStrings(in: ConnectionPanelOverlay(viewModel: viewModel, dismiss: {}).body)
+
+        XCTAssertTrue(renderedStrings.contains("Darluc's MacBook Pro"), renderedStrings.joined(separator: "\n"))
+        XCTAssertFalse(renderedStrings.contains("Darluc's iPhone"), renderedStrings.joined(separator: "\n"))
+    }
+
+    func testConnectionPanelDoesNotFallbackToIOSDeviceNameWhenMacServiceNameIsMissing() {
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(),
+            identityStore: FakePairedIdentityStore(initialIdentity: PairedMacIdentity(
+                deviceID: "iphone-1",
+                deviceName: "Darluc's iPhone"
+            ))
+        )
+
+        let renderedStrings = renderedViewStrings(in: ConnectionPanelOverlay(viewModel: viewModel, dismiss: {}).body)
+
+        XCTAssertFalse(renderedStrings.contains("Darluc's iPhone"), renderedStrings.joined(separator: "\n"))
     }
 
     func testPowerButtonDisconnectsCurrentMacButKeepsRememberedPairing() async {
-        let identity = PairedMacIdentity(deviceID: "mac-1", deviceName: "Darluc's MacBook Pro")
+        let identity = pairedMacIdentity()
         var clearedSecureSessions = 0
         let store = FakePairedIdentityStore(initialIdentity: identity)
         let viewModel = RemoteMicShellViewModel(
@@ -327,8 +431,9 @@ final class TalkaIOSTests: XCTestCase {
         )
         await viewModel.reconnectToKnownMac()
 
-        await viewModel.toggleConnectionPower()
+        let result = await viewModel.toggleConnectionPower()
 
+        XCTAssertEqual(result, .none)
         XCTAssertEqual(viewModel.connectionState, .idle)
         XCTAssertNil(viewModel.currentMacName)
         XCTAssertEqual(viewModel.knownMacName, "Darluc's MacBook Pro")
@@ -337,7 +442,7 @@ final class TalkaIOSTests: XCTestCase {
     }
 
     func testPowerButtonReconnectsRememberedMacWhenDisconnected() async {
-        let identity = PairedMacIdentity(deviceID: "mac-1", deviceName: "Darluc's MacBook Pro")
+        let identity = pairedMacIdentity()
         let sessionClient = FakeRemoteSessionClient(reconnectResults: [.success(identity)])
         let viewModel = RemoteMicShellViewModel(
             discoveryBrowser: FakeDiscoveryBrowser(),
@@ -345,10 +450,42 @@ final class TalkaIOSTests: XCTestCase {
             identityStore: FakePairedIdentityStore(initialIdentity: identity)
         )
 
-        await viewModel.toggleConnectionPower()
+        let result = await viewModel.toggleConnectionPower()
 
+        XCTAssertEqual(result, .none)
         XCTAssertEqual(viewModel.connectionState, .paired)
         XCTAssertEqual(viewModel.currentMacName, "Darluc's MacBook Pro")
+        XCTAssertEqual(sessionClient.reconnectCalls, 1)
+    }
+
+    func testPowerButtonRequestsPairingWhenNoKnownMacIsAvailable() async {
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(),
+            identityStore: FakePairedIdentityStore()
+        )
+
+        let result = await viewModel.toggleConnectionPower()
+
+        XCTAssertEqual(result, .showPairingPanel)
+        XCTAssertEqual(viewModel.connectionState, .idle)
+        XCTAssertEqual(viewModel.lastErrorMessage, RemoteMicFlowError.noKnownMac.errorDescription)
+    }
+
+    func testPowerButtonRequestsPairingWhenRememberedReconnectFails() async {
+        let identity = pairedMacIdentity()
+        let sessionClient = FakeRemoteSessionClient(reconnectResults: [.failure(RemoteMicFlowError.reconnectFailed("Server unavailable"))])
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: sessionClient,
+            identityStore: FakePairedIdentityStore(initialIdentity: identity)
+        )
+
+        let result = await viewModel.toggleConnectionPower()
+
+        XCTAssertEqual(result, .showPairingPanel)
+        XCTAssertEqual(viewModel.connectionState, .failedPairing)
+        XCTAssertEqual(viewModel.lastErrorMessage, "Server unavailable")
         XCTAssertEqual(sessionClient.reconnectCalls, 1)
     }
 
@@ -390,7 +527,9 @@ final class TalkaIOSTests: XCTestCase {
 
         await viewModel.startRecording()
         microphoneSource.emit(Data(repeating: 3, count: TalkaAudioFormat.frameByteCount))
-        await Task.yield()
+        while streamClient.events.count < 2 {
+            await Task.yield()
+        }
         await viewModel.stopRecording()
 
         XCTAssertTrue(microphoneSource.didStart)
@@ -400,6 +539,9 @@ final class TalkaIOSTests: XCTestCase {
             .frame(sequence: 1, byteCount: TalkaAudioFormat.frameByteCount)
         ])
         XCTAssertEqual(streamClient.events.count, 3)
+        guard streamClient.events.count > 2 else {
+            return
+        }
         guard case .stop = streamClient.events[2] else {
             XCTFail("events[2] = \(streamClient.events[2]), want stop")
             return
@@ -420,7 +562,9 @@ final class TalkaIOSTests: XCTestCase {
 
         await viewModel.startRecording()
         microphoneSource.emit(Data(repeating: 3, count: TalkaAudioFormat.frameByteCount))
-        await Task.yield()
+        while streamClient.events.count < 2 {
+            await Task.yield()
+        }
 
         let stopTask = Task { @MainActor in
             await viewModel.stopRecording()
@@ -441,6 +585,9 @@ final class TalkaIOSTests: XCTestCase {
             .frame(sequence: 1, byteCount: TalkaAudioFormat.frameByteCount)
         ])
         XCTAssertEqual(streamClient.events.count, 3)
+        guard streamClient.events.count > 2 else {
+            return
+        }
         guard case .stop = streamClient.events[2] else {
             XCTFail("events[2] = \(streamClient.events[2]), want stop")
             return
@@ -719,7 +866,7 @@ final class TalkaIOSTests: XCTestCase {
 
     func testInitializationLoadsKnownPairedMacWithoutStartingDiscovery() {
         let browser = FakeDiscoveryBrowser()
-        let identity = PairedMacIdentity(deviceID: "mac-1", deviceName: "Darluc's MacBook Pro")
+        let identity = pairedMacIdentity()
         let store = FakePairedIdentityStore(initialIdentity: identity)
 
         let viewModel = RemoteMicShellViewModel(
@@ -776,7 +923,7 @@ final class TalkaIOSTests: XCTestCase {
             .success([DiscoveredMac(id: "mac-1", name: "Darluc's MacBook Pro")])
         ])
         let sessionClient = FakeRemoteSessionClient(pairResults: [
-            .success(PairedMacIdentity(deviceID: "mac-1", deviceName: "Darluc's MacBook Pro"))
+            .success(pairedMacIdentity())
         ])
         let store = FakePairedIdentityStore()
         let viewModel = RemoteMicShellViewModel(
@@ -792,7 +939,7 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertEqual(viewModel.connectionState, .paired)
         XCTAssertEqual(viewModel.currentMacName, "Darluc's MacBook Pro")
         XCTAssertEqual(viewModel.knownMacName, "Darluc's MacBook Pro")
-        XCTAssertEqual(store.identity, PairedMacIdentity(deviceID: "mac-1", deviceName: "Darluc's MacBook Pro"))
+        XCTAssertEqual(store.identity, pairedMacIdentity())
         XCTAssertEqual(sessionClient.pairedPins, ["123456"])
         XCTAssertNil(viewModel.lastErrorMessage)
     }
@@ -834,7 +981,7 @@ final class TalkaIOSTests: XCTestCase {
     }
 
     func testReconnectKnownMacAfterServerRestartUsesStoredIdentity() async {
-        let identity = PairedMacIdentity(deviceID: "mac-1", deviceName: "Darluc's MacBook Pro")
+        let identity = pairedMacIdentity()
         let sessionClient = FakeRemoteSessionClient(reconnectResults: [.success(identity)])
         let store = FakePairedIdentityStore(initialIdentity: identity)
         let viewModel = RemoteMicShellViewModel(
@@ -851,7 +998,7 @@ final class TalkaIOSTests: XCTestCase {
     }
 
     func testForgetDeviceClearsStoredIdentityAndResetsShell() async {
-        let identity = PairedMacIdentity(deviceID: "mac-1", deviceName: "Darluc's MacBook Pro")
+        let identity = pairedMacIdentity()
         let browser = FakeDiscoveryBrowser(results: [
             .success([DiscoveredMac(id: "mac-1", name: "Darluc's MacBook Pro")])
         ])
@@ -951,8 +1098,8 @@ private final class FakeRemoteSessionClient: RemotePairingSessioning {
     private(set) var pairedPins: [String] = []
 
     init(
-        pairResults: [Result<PairedMacIdentity, Error>] = [.success(PairedMacIdentity(deviceID: "mac-1", deviceName: "Darluc's MacBook Pro"))],
-        reconnectResults: [Result<PairedMacIdentity, Error>] = [.success(PairedMacIdentity(deviceID: "mac-1", deviceName: "Darluc's MacBook Pro"))]
+        pairResults: [Result<PairedMacIdentity, Error>] = [.success(pairedMacIdentity())],
+        reconnectResults: [Result<PairedMacIdentity, Error>] = [.success(pairedMacIdentity())]
     ) {
         self.pairResults = pairResults
         self.reconnectResults = reconnectResults

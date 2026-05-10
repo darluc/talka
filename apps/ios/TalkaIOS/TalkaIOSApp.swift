@@ -115,6 +115,11 @@ enum RemoteMicRecordingState: String, Equatable {
     case failed
 }
 
+enum RemoteMicPowerToggleResult: Equatable {
+    case none
+    case showPairingPanel
+}
+
 struct DiscoveredMac: Identifiable, Equatable {
     var id: String
     var name: String
@@ -133,6 +138,15 @@ struct PairedMacIdentity: Codable, Equatable {
     var clientIdentityPrivateKey: String? = nil
     var clientIdentityPublicKey: String? = nil
     var serverIdentityPublicKey: String? = nil
+}
+
+extension PairedMacIdentity {
+    var macDisplayName: String? {
+        guard let serverDeviceName, !serverDeviceName.isEmpty else {
+            return nil
+        }
+        return serverDeviceName
+    }
 }
 
 enum TalkaAudioFormat {
@@ -252,6 +266,36 @@ struct PCMFrameAccumulator {
         }
 
         return frames
+    }
+}
+
+enum PCMVolumeLevel {
+    static func level(for pcm: Data) -> Double {
+        guard pcm.count >= MemoryLayout<Int16>.size else {
+            return 0
+        }
+
+        var squaredSum = 0.0
+        var sampleCount = 0
+        var byteIndex = 0
+
+        let bytes = [UInt8](pcm)
+
+        while byteIndex + 1 < bytes.count {
+            let low = UInt16(bytes[byteIndex])
+            let high = UInt16(bytes[byteIndex + 1]) << 8
+            let sample = Int16(bitPattern: high | low)
+            let normalizedSample = Double(sample) / Double(Int16.max)
+            squaredSum += normalizedSample * normalizedSample
+            sampleCount += 1
+            byteIndex += MemoryLayout<Int16>.size
+        }
+
+        guard sampleCount > 0 else {
+            return 0
+        }
+
+        return min(max(sqrt(squaredSum / Double(sampleCount)), 0), 1)
     }
 }
 
@@ -513,7 +557,12 @@ struct RemoteMicShellEnvironment {
     }
 
     static func uiTesting() -> RemoteMicShellEnvironment {
-        let identity = PairedMacIdentity(deviceID: "mac-ui-test", deviceName: "Darluc's MacBook Pro")
+        let identity = PairedMacIdentity(
+            deviceID: "ios-ui-test",
+            deviceName: "Talka UI Test iPhone",
+            serverDeviceID: "mac-ui-test",
+            serverDeviceName: "Darluc's MacBook Pro"
+        )
         let secureSessionStore = SecureAudioSessionStore()
         return RemoteMicShellEnvironment(
             discoveryBrowser: UITestingDiscoveryBrowser(),
@@ -594,14 +643,14 @@ final class RemoteMicShellViewModel: ObservableObject {
         do {
             let identity = try identityStore.loadPairedIdentity()
             knownIdentity = identity
-            currentMacName = identity?.deviceName
+            currentMacName = identity?.macDisplayName
         } catch {
             lastErrorMessage = "The saved Mac could not be loaded. Pair again if needed."
         }
     }
 
     var knownMacName: String? {
-        knownIdentity?.deviceName
+        knownIdentity?.macDisplayName
     }
 
     var selectedMacName: String? {
@@ -678,7 +727,7 @@ final class RemoteMicShellViewModel: ObservableObject {
             let identity = try await sessionClient.pair(with: selectedMac, pin: pin.trimmingCharacters(in: .whitespacesAndNewlines))
             try identityStore.savePairedIdentity(identity)
             knownIdentity = identity
-            currentMacName = identity.deviceName
+            currentMacName = identity.macDisplayName
             pin = ""
             connectionState = .paired
         } catch let error as RemoteMicFlowError {
@@ -708,7 +757,7 @@ final class RemoteMicShellViewModel: ObservableObject {
             let refreshedIdentity = try await sessionClient.reconnect(using: identity)
             try identityStore.savePairedIdentity(refreshedIdentity)
             knownIdentity = refreshedIdentity
-            currentMacName = refreshedIdentity.deviceName
+            currentMacName = refreshedIdentity.macDisplayName
             connectionState = .paired
         } catch let error as RemoteMicFlowError {
             connectionState = .failedPairing
@@ -719,13 +768,22 @@ final class RemoteMicShellViewModel: ObservableObject {
         }
     }
 
-    func toggleConnectionPower() async {
+    @discardableResult
+    func toggleConnectionPower() async -> RemoteMicPowerToggleResult {
         if isConnectionActive {
             await disconnectFromCurrentMac()
-            return
+            return .none
+        }
+
+        let storedIdentity = knownIdentity ?? (try? identityStore.loadPairedIdentity())
+        guard storedIdentity != nil else {
+            connectionState = .idle
+            lastErrorMessage = RemoteMicFlowError.noKnownMac.errorDescription
+            return .showPairingPanel
         }
 
         await reconnectToKnownMac()
+        return isConnectionActive ? .none : .showPairingPanel
     }
 
     func disconnectFromCurrentMac() async {
@@ -888,7 +946,7 @@ final class RemoteMicShellViewModel: ObservableObject {
                 return
             }
             let sequence = lastAudioSequence + 1
-            audioLevel = frame.isEmpty ? 0 : 1
+            audioLevel = PCMVolumeLevel.level(for: frame)
             print("[Talka] sending audio frame seq=\(sequence), size=\(frame.count)")
             try await audioStreamClient.sendAudioFrame(sequence: sequence, payload: frame)
             guard recordingState == .recording else {
@@ -1259,7 +1317,7 @@ struct SecureRemotePairingSessionClient: RemotePairingSessioning {
     }
 
     func reconnect(using identity: PairedMacIdentity) async throws -> PairedMacIdentity {
-        let baseURL = try httpBaseURL(for: DiscoveredMac(id: identity.deviceID, name: identity.deviceName, hostName: identity.hostName, port: identity.port))
+        let baseURL = try httpBaseURL(for: DiscoveredMac(id: identity.deviceID, name: identity.serverDeviceName ?? "", hostName: identity.hostName, port: identity.port))
         guard let privateKey = try? TalkaSecureTransport.privateKey(from: identity.clientIdentityPrivateKey) else {
             throw RemoteMicFlowError.reconnectFailed("The saved iPhone identity is incomplete. Pair again.")
         }
@@ -1765,6 +1823,7 @@ private struct UITestingRootView: View {
 struct ContentView: View {
     @StateObject private var viewModel: RemoteMicShellViewModel
     @State private var isConnectionPanelPresented = false
+    @State private var isPairingPanelPresented = false
     @State private var isPressingMicrophone = false
 
     @MainActor
@@ -1789,7 +1848,11 @@ struct ContentView: View {
                 },
                 togglePower: {
                     Task {
-                        await viewModel.toggleConnectionPower()
+                        let result = await viewModel.toggleConnectionPower()
+                        if result == .showPairingPanel {
+                            isConnectionPanelPresented = false
+                            isPairingPanelPresented = true
+                        }
                     }
                 },
                 startRecording: startPressRecording,
@@ -1805,12 +1868,23 @@ struct ContentView: View {
                 )
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
+
+            if isPairingPanelPresented {
+                PairingPanelOverlay(
+                    viewModel: viewModel,
+                    dismiss: {
+                        isPairingPanelPresented = false
+                    }
+                )
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            }
         }
         .animation(.spring(response: 0.28, dampingFraction: 0.88), value: isConnectionPanelPresented)
+        .animation(.spring(response: 0.28, dampingFraction: 0.88), value: isPairingPanelPresented)
     }
 
     private func startPressRecording() {
-        guard !isPressingMicrophone, viewModel.recordingState != .recording, viewModel.recordingState != .stopping else {
+        guard viewModel.isConnectionActive, !isPressingMicrophone, viewModel.recordingState != .recording, viewModel.recordingState != .stopping else {
             return
         }
         isPressingMicrophone = true
@@ -1904,22 +1978,13 @@ struct RemoteMicControlSurface: View {
                     .accessibilityIdentifier("connectionPowerButton")
                 }
 
-                if let macName = viewModel.displayMacName {
-                    Text(macName)
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                        .padding(.horizontal, 24)
-                        .padding(.top, 6)
-                }
-
                 Spacer(minLength: 16)
 
                 MicrophonePressButton(
                     recordingState: viewModel.recordingState,
                     isPressing: isPressingMicrophone,
                     audioLevel: viewModel.audioLevel,
+                    isEnabled: viewModel.isConnectionActive && !viewModel.isBusy,
                     startRecording: startRecording,
                     stopRecording: stopRecording
                 )
@@ -1936,10 +2001,15 @@ private struct MicrophonePressButton: View {
     var recordingState: RemoteMicRecordingState
     var isPressing: Bool
     var audioLevel: Double
+    var isEnabled: Bool
     var startRecording: () -> Void
     var stopRecording: () -> Void
 
     private var ringTint: Color {
+        guard isEnabled else {
+            return .secondary
+        }
+
         switch recordingState {
         case .recording:
             return .green
@@ -1965,7 +2035,7 @@ private struct MicrophonePressButton: View {
                 .scaleEffect(recordingState == .stopping ? 0.96 : 1)
 
             if recordingState == .recording {
-                AudioWaveArcLayer(audioLevel: audioLevel)
+                AudioBreathingRingLayer(audioLevel: audioLevel, tint: ringTint)
                     .frame(width: 220, height: 220)
                     .allowsHitTesting(false)
             }
@@ -1990,12 +2060,17 @@ private struct MicrophonePressButton: View {
         .gesture(
             DragGesture(minimumDistance: 0)
                 .onChanged { _ in
+                    guard isEnabled else { return }
                     startRecording()
                 }
                 .onEnded { _ in
+                    guard isEnabled else { return }
                     stopRecording()
                 }
         )
+        .allowsHitTesting(isEnabled)
+        .opacity(isEnabled ? 1 : 0.42)
+        .disabled(!isEnabled)
         .accessibilityLabel("Microphone")
         .accessibilityValue(accessibilityValue)
         .accessibilityAddTraits(.isButton)
@@ -2016,94 +2091,57 @@ private struct MicrophonePressButton: View {
     }
 }
 
-struct AudioWaveArcMetrics {
-    static let minimumAmplitude: Double = 4
-    static let maximumAmplitude: Double = 13
+struct AudioBreathingRingMetrics {
+    static let minimumIntensity: Double = 0
+    static let maximumIntensity: Double = 1
+    static let baseRadiusExpansion: Double = 0
+    static let maximumAudioRadiusExpansion: Double = 15
 
-    static func amplitude(for audioLevel: Double) -> Double {
-        let normalizedLevel = min(max(audioLevel, 0), 1)
-        return minimumAmplitude + (maximumAmplitude - minimumAmplitude) * normalizedLevel
+    static func intensity(for audioLevel: Double) -> Double {
+        min(max(audioLevel, minimumIntensity), maximumIntensity)
+    }
+
+    static func radiusExpansion(for audioLevel: Double) -> Double {
+        baseRadiusExpansion + intensity(for: audioLevel) * maximumAudioRadiusExpansion
     }
 }
 
-private struct AudioWaveArcLayer: View {
+private struct AudioBreathingRingLayer: View {
     var audioLevel: Double
+    var tint: Color
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-            let phase = timeline.date.timeIntervalSinceReferenceDate * 4.2
-            let amplitude = AudioWaveArcMetrics.amplitude(for: audioLevel)
+            let elapsed = timeline.date.timeIntervalSinceReferenceDate
+            let intensity = AudioBreathingRingMetrics.intensity(for: audioLevel)
 
             ZStack {
-                AudioWaveArcShape(amplitude: amplitude * 0.55, phase: phase + .pi)
-                    .stroke(Color.green.opacity(0.24), style: StrokeStyle(lineWidth: 6, lineCap: .round, lineJoin: .round))
-                    .blur(radius: 0.6)
+                ForEach(0..<3, id: \.self) { index in
+                    let progress = breathingProgress(elapsed: elapsed, index: index)
+                    let scale = 0.78 + progress * AudioBreathingRingMetrics.radiusExpansion(for: audioLevel)
+                    let opacity = (1 - progress) * (0.42 + intensity * 0.28)
 
-                AudioWaveArcShape(amplitude: amplitude, phase: phase)
-                    .stroke(
-                        LinearGradient(
-                            colors: [
-                                Color.green.opacity(0.36),
-                                Color(red: 0.34, green: 0.95, blue: 0.55),
-                                Color.green.opacity(0.42)
-                            ],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        ),
-                        style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round)
-                    )
-                    .shadow(color: Color.green.opacity(0.34), radius: 8)
+                    Circle()
+                        .stroke(tint.opacity(opacity), lineWidth: 2.5 + intensity * 3)
+                        .scaleEffect(scale)
+                }
             }
         }
     }
-}
 
-private struct AudioWaveArcShape: Shape {
-    var amplitude: Double
-    var phase: Double
-
-    var animatableData: AnimatablePair<Double, Double> {
-        get { AnimatablePair(amplitude, phase) }
-        set {
-            amplitude = newValue.first
-            phase = newValue.second
-        }
-    }
-
-    func path(in rect: CGRect) -> Path {
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        let baseRadius = min(rect.width, rect.height) * 0.415
-        let startAngle = Angle.degrees(208).radians
-        let endAngle = Angle.degrees(512).radians
-        let steps = 150
-        var path = Path()
-
-        for index in 0...steps {
-            let progress = Double(index) / Double(steps)
-            let angle = startAngle + (endAngle - startAngle) * progress
-            let edgeFade = sin(progress * .pi)
-            let ripple = sin(progress * .pi * 6.0 + phase)
-            let radius = baseRadius + ripple * amplitude * edgeFade
-            let point = CGPoint(
-                x: center.x + cos(angle) * radius,
-                y: center.y + sin(angle) * radius
-            )
-
-            if index == 0 {
-                path.move(to: point)
-            } else {
-                path.addLine(to: point)
-            }
-        }
-
-        return path
+    private func breathingProgress(elapsed: TimeInterval, index: Int) -> Double {
+        let duration = 1.9
+        let stagger = duration / 3
+        let shifted = elapsed + Double(index) * stagger
+        return shifted.truncatingRemainder(dividingBy: duration) / duration
     }
 }
 
-private struct ConnectionPanelOverlay: View {
+struct ConnectionPanelOverlay: View {
     @ObservedObject var viewModel: RemoteMicShellViewModel
     var dismiss: () -> Void
     @State private var isDebugExpanded = false
+    @State private var isForgetConfirmationPresented = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -2113,7 +2151,7 @@ private struct ConnectionPanelOverlay: View {
 
             VStack(alignment: .leading, spacing: 14) {
                 HStack {
-                    Text("连接")
+                    Text("设置")
                         .font(.title2.weight(.bold))
 
                     Spacer()
@@ -2129,45 +2167,79 @@ private struct ConnectionPanelOverlay: View {
                 }
 
                 if let macName = viewModel.displayMacName {
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(macName)
-                                .font(.headline)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.76)
-                            Text(viewModel.isConnectionActive ? "secure session" : "remembered")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Spacer()
-
-                        if viewModel.isConnectionActive {
-                            Text("Active")
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(.green)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 6)
-                                .background(Color.green.opacity(0.12), in: Capsule())
-                        }
+                    Button {
+                        isForgetConfirmationPresented = true
+                    } label: {
+                        SettingsInfoRow(title: macName, subtitle: viewModel.isConnectionActive ? "已连接" : "已记住", showsStatusDot: true)
                     }
-                    .padding(15)
-                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("connectedMacInfo")
+                    .confirmationDialog("是否遗忘设备", isPresented: $isForgetConfirmationPresented, titleVisibility: .visible) {
+                        Button("遗忘设备", role: .destructive) {
+                            Task {
+                                await viewModel.forgetKnownMac()
+                            }
+                        }
+
+                        Button("取消", role: .cancel) {}
+                    }
                 }
 
-                HStack(spacing: 10) {
-                    ConnectionActionButton(title: "Discover", symbolName: "magnifyingglass") {
-                        Task {
-                            await viewModel.discover()
-                        }
+                Button {
+                    withAnimation(.spring(response: 0.24, dampingFraction: 0.9)) {
+                        isDebugExpanded.toggle()
                     }
-                    .disabled(viewModel.isBusy)
+                } label: {
+                    SettingsInfoRow(title: "Debug", subtitle: "音频状态与错误信息", showsStatusDot: false)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("debugMenuButton")
 
-                    ConnectionActionButton(title: "Debug", symbolName: "stethoscope") {
-                        withAnimation(.spring(response: 0.24, dampingFraction: 0.9)) {
-                            isDebugExpanded.toggle()
-                        }
+                if isDebugExpanded {
+                    DebugPanel(viewModel: viewModel)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .padding(16)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("connectionPanel")
+        }
+    }
+}
+
+private struct PairingPanelOverlay: View {
+    @ObservedObject var viewModel: RemoteMicShellViewModel
+    var dismiss: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+                .onTapGesture(perform: dismiss)
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("连接到 Mac")
+                        .font(.title2.weight(.bold))
+
+                    Spacer()
+
+                    Button(action: dismiss) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .frame(width: 36, height: 36)
                     }
+                    .buttonStyle(GlassCircleButtonStyle(tint: Color(uiColor: .label)))
+                    .accessibilityLabel("Close")
+                    .accessibilityIdentifier("pairingPanelCloseButton")
+                }
+
+                if viewModel.isBusy {
+                    ProgressView("Searching")
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if !viewModel.discoveredMacs.isEmpty {
@@ -2177,48 +2249,80 @@ private struct ConnectionPanelOverlay: View {
                         }
                     }
                     .pickerStyle(.menu)
-
-                    TextField("PIN", text: $viewModel.pin)
-                        .keyboardType(.numberPad)
-                        .textFieldStyle(.roundedBorder)
-
-                    Button {
-                        Task {
-                            await viewModel.pairSelectedMac()
-                        }
-                    } label: {
-                        Text("Connect")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(viewModel.selectedMacID == nil || viewModel.pin.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isBusy)
                 }
 
-                if isDebugExpanded {
-                    DebugPanel(viewModel: viewModel)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                }
+                TextField("PIN", text: $viewModel.pin)
+                    .keyboardType(.numberPad)
+                    .textContentType(.oneTimeCode)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("pinTextField")
 
-                Button(role: .destructive) {
+                Button {
                     Task {
-                        await viewModel.forgetKnownMac()
+                        await viewModel.pairSelectedMac()
+                        if viewModel.isConnectionActive {
+                            dismiss()
+                        }
                     }
                 } label: {
-                    HStack {
-                        Text("Forget Device")
-                        Spacer()
-                        Image(systemName: "minus")
-                    }
+                    Text("Connect")
+                        .frame(maxWidth: .infinity)
                 }
-                .disabled(!viewModel.canReconnect && viewModel.currentMacName == nil)
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.selectedMacID == nil || viewModel.pin.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isBusy)
+
+                if let error = viewModel.lastErrorMessage {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(16)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 28, style: .continuous))
             .padding(.horizontal, 16)
             .padding(.bottom, 12)
             .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("connectionPanel")
+            .accessibilityIdentifier("pairingPanel")
+            .task {
+                if viewModel.discoveredMacs.isEmpty {
+                    await viewModel.discover()
+                }
+            }
         }
+    }
+}
+
+private struct SettingsInfoRow: View {
+    var title: String
+    var subtitle: String
+    var showsStatusDot: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if showsStatusDot {
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 11, height: 11)
+                    .padding(.horizontal, 2)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.76)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(15)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 
@@ -2253,26 +2357,6 @@ private struct DebugRow: View {
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
-    }
-}
-
-private struct ConnectionActionButton: View {
-    var title: String
-    var symbolName: String
-    var action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 8) {
-                Image(systemName: symbolName)
-                    .font(.system(size: 23, weight: .semibold))
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-            }
-            .frame(maxWidth: .infinity, minHeight: 68)
-        }
-        .buttonStyle(.plain)
-        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 

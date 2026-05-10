@@ -1538,47 +1538,295 @@ struct PairingWindowView: View {
 struct DiagnosticsView: View {
     @ObservedObject var viewModel: AppShellViewModel
 
+    private var overallLabel: String {
+        viewModel.isEverythingHealthy ? "All Systems Ready" : "Needs Attention"
+    }
+
+    private var overallTint: Color {
+        viewModel.isEverythingHealthy ? .green : (viewModel.serviceDisplayState == .error ? .red : .orange)
+    }
+
+    private var configPath: String {
+        viewModel.status?.configPath.isEmpty == false ? viewModel.status!.configPath : viewModel.config.path.isEmpty ? "Not loaded" : viewModel.config.path
+    }
+
+    private var asrStatus: (status: String, detail: String, tint: Color) {
+        guard let asr = viewModel.status?.asr else {
+            return ("Unknown", viewModel.config.asr.provider, .secondary)
+        }
+        return (
+            asr.ready ? "Ready" : "Unavailable",
+            asr.provider,
+            asr.ready ? .green : .red
+        )
+    }
+
+    private var aiStatus: (status: String, detail: String, tint: Color) {
+        guard let ollama = viewModel.status?.ollama else {
+            return ("Unknown", viewModel.config.llm.model, .secondary)
+        }
+        return (
+            ollama.ready ? "Ready" : "Unavailable",
+            ollama.model,
+            ollama.ready ? .green : .red
+        )
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: ShellMetrics.panelSpacing) {
-                StatusSummaryCard(viewModel: viewModel)
-
-                GroupBox("Diagnostics") {
-                    VStack(alignment: .leading, spacing: ShellMetrics.sectionSpacing) {
-                        ForEach(Array(viewModel.diagnosticsRows.enumerated()), id: \.offset) { _, row in
-                            LabeledContent(row.0) {
-                                Text(row.1)
-                                    .font(.body.monospacedDigit())
-                            }
-                        }
+                DiagnosticHeaderCard(
+                    title: overallLabel,
+                    subtitle: viewModel.statusMessage,
+                    tint: overallTint,
+                    isBusy: viewModel.isBusy
+                ) {
+                    Task {
+                        await viewModel.refresh()
                     }
-                    .padding(.top, 4)
                 }
 
-                GroupBox("Accessibility Guidance") {
-                    VStack(alignment: .leading, spacing: ShellMetrics.sectionSpacing) {
-                        AccessibilityGuidanceView(guidance: viewModel.accessibilityGuidance)
-                        Button("Refresh Guidance") {
-                            Task {
-                                await viewModel.requestAccessibilityGuidance()
-                            }
-                        }
-                    }
-                    .padding(.top, 4)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
+                    DiagnosticStatusCard(
+                        title: "Service",
+                        status: viewModel.serviceDisplayState.label,
+                        detail: viewModel.formattedUptime,
+                        tint: viewModel.serviceDisplayState.tint
+                    )
+
+                    DiagnosticStatusCard(
+                        title: "ASR Runtime",
+                        status: asrStatus.status,
+                        detail: asrStatus.detail,
+                        tint: asrStatus.tint
+                    )
+
+                    DiagnosticStatusCard(
+                        title: "AI API",
+                        status: aiStatus.status,
+                        detail: aiStatus.detail,
+                        tint: aiStatus.tint
+                    )
+
+                    DiagnosticStatusCard(
+                        title: "Accessibility",
+                        status: viewModel.status?.permissions?.accessibility.capitalized ?? "Unknown",
+                        detail: "Paste permission path",
+                        tint: viewModel.status?.permissions?.accessibility == "granted" ? .green : .secondary
+                    )
                 }
 
-                if let recovery = viewModel.injectionRecovery {
-                    GroupBox("Insertion Recovery") {
-                        RecoveryStateView(recovery: recovery)
-                            .padding(.top, 4)
+                DiagnosticSection(title: "Failure Evidence") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let message = viewModel.lastErrorMessage, !message.isEmpty {
+                            DiagnosticMessageRow(title: "App", message: message, tint: viewModel.serviceDisplayState == .error ? .red : .secondary)
+                        }
+
+                        if let asr = viewModel.status?.asr, !asr.ready {
+                            DiagnosticMessageRow(title: "ASR", message: asr.error ?? "ASR runtime did not report ready.", tint: .red)
+                        }
+
+                        if let ollama = viewModel.status?.ollama, !ollama.ready {
+                            DiagnosticMessageRow(title: "AI", message: ollama.error ?? "AI endpoint did not report ready.", tint: .red)
+                        }
+
+                        if viewModel.lastErrorMessage == nil,
+                           viewModel.status?.asr?.ready != false,
+                           viewModel.status?.ollama?.ready != false {
+                            Text("No active failure reported by the control API.")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                DiagnosticSection(title: "Runtime Evidence") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        DiagnosticPathRow(title: "Config", value: configPath)
+                        DiagnosticPathRow(title: "Control API", value: viewModel.diagnosticsRows.first { $0.0 == "Control API" }?.1 ?? "Unknown")
+                        DiagnosticPathRow(title: "ASR Runtime", value: viewModel.status?.asr?.runtimePath ?? viewModel.config.asr.runtimePath)
+                        DiagnosticPathRow(title: "ASR Model", value: viewModel.config.asr.models.asr)
+                        DiagnosticPathRow(title: "Last Updated", value: viewModel.diagnosticsRows.first { $0.0 == "Last Refresh" }?.1 ?? "Never")
+                    }
+                }
+
+                DiagnosticSection(title: "Recovery") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Button("Refresh") {
+                                Task {
+                                    await viewModel.refresh()
+                                }
+                            }
+
+                            Button("Open Accessibility Settings") {
+                                Task {
+                                    await viewModel.requestAccessibilityGuidance()
+                                }
+                            }
+
+                            if let title = viewModel.recoveryActionTitle {
+                                Button(title) {
+                                    Task {
+                                        await viewModel.performRecoveryAction()
+                                    }
+                                }
+                            }
+
+                            Spacer()
+
+                            if viewModel.isBusy {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                        }
+
+                        if let guidance = viewModel.accessibilityGuidance {
+                            AccessibilityGuidanceView(guidance: guidance)
+                        }
+
+                        if let recovery = viewModel.injectionRecovery {
+                            RecoveryStateView(recovery: recovery)
+                        }
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(ShellMetrics.contentPadding)
         }
     }
 }
 
+struct DiagnosticHeaderCard: View {
+    let title: String
+    let subtitle: String
+    let tint: Color
+    let isBusy: Bool
+    let refresh: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Circle()
+                .fill(tint)
+                .frame(width: 14, height: 14)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.title3.weight(.semibold))
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if isBusy {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            Button("Refresh", action: refresh)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+struct DiagnosticStatusCard: View {
+    let title: String
+    let status: String
+    let detail: String
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(title)
+                    .font(.headline)
+                Spacer()
+                Circle()
+                    .fill(tint)
+                    .frame(width: 9, height: 9)
+            }
+
+            Text(status)
+                .font(.title3.weight(.semibold))
+
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 112, alignment: .leading)
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+struct DiagnosticSection<Content: View>: View {
+    let title: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.headline)
+            content
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quinary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+struct DiagnosticMessageRow: View {
+    let title: String
+    let message: String
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(tint)
+                    .frame(width: 8, height: 8)
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            Text(message)
+                .font(.body.monospaced())
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(tint.opacity(0.35))
+        }
+    }
+}
+
+struct DiagnosticPathRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 96, alignment: .leading)
+            Text(value.isEmpty ? "Not set" : value)
+                .font(.body.monospaced())
+                .textSelection(.enabled)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+    }
+}
 struct StatusSummaryCard: View {
     @ObservedObject var viewModel: AppShellViewModel
 

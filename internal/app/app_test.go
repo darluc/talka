@@ -313,6 +313,51 @@ func TestDiagnosticsExportRedactsPINsAndPrivateCaptureByDefault(t *testing.T) {
 	}
 }
 
+func TestDiagnosticsExportIncludesLatencyTracesWithoutPrivatePayloads(t *testing.T) {
+	useFakeIOSPairingStore(t)
+	cfg, cfgPath := mustConfig(t)
+	service, err := NewWithPipeline(cfg, cfgPath, nil, NewPipeline(newHealthProbeASR(nil), newHealthProbeLLM(nil), inject.NewFakeInjector()))
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
+	}
+	service.latencyRecorder.Start("trace-1", "iphone-1", time.Date(2026, 5, 11, 10, 0, 0, 0, time.UTC))
+	service.latencyRecorder.Update("trace-1", func(trace *LatencyTrace) {
+		trace.BufferedMessages = 7
+		trace.Frames = 5
+		trace.DecryptDecodeMS = 11
+		trace.ASRMS = 222
+		trace.LLMMS = 333
+		trace.FinalTextChars = 4
+	})
+	server := httptest.NewServer(service.Handler())
+	defer server.Close()
+
+	resp := mustGet(t, server.URL+"/v1/diagnostics/export")
+	defer resp.Body.Close()
+
+	var payload DiagnosticsExportResponse
+	decodeJSON(t, resp, &payload)
+	if len(payload.LatencyTraces) != 1 {
+		t.Fatalf("len(LatencyTraces) = %d, want 1", len(payload.LatencyTraces))
+	}
+	trace := payload.LatencyTraces[0]
+	if got, want := trace.TraceID, "trace-1"; got != want {
+		t.Fatalf("TraceID = %q, want %q", got, want)
+	}
+	if got, want := trace.ASRMS, int64(222); got != want {
+		t.Fatalf("ASRMS = %d, want %d", got, want)
+	}
+	encoded, err := json.Marshal(payload.LatencyTraces)
+	if err != nil {
+		t.Fatalf("Marshal(payload) error = %v", err)
+	}
+	for _, forbidden := range []string{"raw_audio", "full_transcript", "你好"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("latency diagnostics leaked %q in %s", forbidden, string(encoded))
+		}
+	}
+}
+
 func TestIOSPairingRejectsLegacyPINPayloadWithoutExposingRawSessionKeys(t *testing.T) {
 	server := newTestServer(t)
 
@@ -445,6 +490,28 @@ func TestIOSWebSocketErrorCodePropagatesInjectionFailures(t *testing.T) {
 	}
 }
 
+func TestRecordLatencyErrorStoresCodeWithoutPrivateErrorText(t *testing.T) {
+	cfg, cfgPath := mustConfig(t)
+	service, err := NewWithPipeline(cfg, cfgPath, nil, NewPipeline(newHealthProbeASR(nil), newHealthProbeLLM(nil), inject.NewFakeInjector()))
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
+	}
+	service.latencyRecorder.Start("trace-private", "iphone-1", time.Now())
+
+	service.recordLatencyError("trace-private", "llm", fmt.Errorf("provider echoed transcript: 你好，世界"))
+
+	traces := service.latencyRecorder.Snapshot()
+	if got, want := traces[0].ErrorStage, "llm"; got != want {
+		t.Fatalf("ErrorStage = %q, want %q", got, want)
+	}
+	if got, want := traces[0].Error, "processing_failed"; got != want {
+		t.Fatalf("Error = %q, want sanitized code %q", got, want)
+	}
+	if strings.Contains(traces[0].Error, "你好") {
+		t.Fatalf("latency error leaked private text: %q", traces[0].Error)
+	}
+}
+
 func TestDecryptIOSAudioMessagesTreatsStopLastSequenceAsAdvisory(t *testing.T) {
 	for _, tt := range []struct {
 		name         string
@@ -543,7 +610,7 @@ func TestQueueIOSFinalTextInsertionRunsInjectorInBackground(t *testing.T) {
 		t.Fatalf("NewWithPipeline() error = %v", err)
 	}
 
-	service.queueIOSFinalTextInsertion("iphone-1", "你好，世界")
+	service.queueIOSFinalTextInsertion("trace-test", "iphone-1", "你好，世界")
 
 	select {
 	case text := <-injector.started:
@@ -612,6 +679,27 @@ func TestIOSAudioWebSocketReturnsJSONBeforeCloseFrame(t *testing.T) {
 	}
 	if closeOpcode != 0x8 {
 		t.Fatalf("close opcode = %#x, want close frame", closeOpcode)
+	}
+
+	traces := service.latencyRecorder.Snapshot()
+	if len(traces) == 0 {
+		t.Fatal("latency recorder has no traces after websocket session")
+	}
+	trace := traces[0]
+	if trace.TraceID == "" || strings.Contains(trace.TraceID, "iphone-1") {
+		t.Fatalf("TraceID = %q, want opaque non-empty trace id", trace.TraceID)
+	}
+	if trace.BufferedMessages == 0 || trace.Frames == 0 {
+		t.Fatalf("trace counts = messages:%d frames:%d, want populated", trace.BufferedMessages, trace.Frames)
+	}
+	if trace.ASRMS < 0 || trace.LLMMS < 0 {
+		t.Fatalf("trace timings = ASR:%d LLM:%d, want non-negative", trace.ASRMS, trace.LLMMS)
+	}
+	if trace.RawTranscriptChars == 0 || trace.FinalTextChars == 0 {
+		t.Fatalf("trace text lengths = raw:%d final:%d, want populated", trace.RawTranscriptChars, trace.FinalTextChars)
+	}
+	if trace.ResponseWriteMS < 0 || trace.TotalAfterStopMS <= 0 {
+		t.Fatalf("trace response/total = response:%d total:%d, want valid", trace.ResponseWriteMS, trace.TotalAfterStopMS)
 	}
 }
 

@@ -268,6 +268,7 @@ protocol ControlAPIClient {
     func saveConfig(_ config: ControlConfig) async throws -> ControlConfig
     func forgetDevice(id: String) async throws
     func openAccessibilitySettings() async throws -> AccessibilityGuidance
+    func fetchDiagnostics() async throws -> ControlDiagnostics
 }
 
 struct ControlStatus: Equatable {
@@ -339,6 +340,151 @@ struct AccessibilityGuidance: Equatable {
     var opened: Bool
     var settingsURL: String
     var message: String
+}
+
+struct ControlDiagnostics: Equatable {
+    var latencyTraces: [ControlLatencyTrace]
+}
+
+struct ControlLatencyTrace: Identifiable, Codable, Equatable {
+    var traceID: String
+    var deviceID: String
+    var acceptedAt: Date
+    var audioStopReceivedAt: Date?
+    var completedAt: Date?
+    var insertCompletedAt: Date?
+    var bufferedMessages: Int
+    var frames: Int
+    var audioMSEstimate: Int64
+    var decryptDecodeMS: Int64
+    var asrMS: Int64
+    var llmMS: Int64
+    var responseWriteMS: Int64
+    var insertMS: Int64
+    var totalAfterStopMS: Int64
+    var rawTranscriptChars: Int
+    var finalTextChars: Int
+    var errorStage: String?
+    var error: String?
+
+    var id: String { traceID }
+
+    enum CodingKeys: String, CodingKey {
+        case traceID = "trace_id"
+        case deviceID = "device_id"
+        case acceptedAt = "accepted_at"
+        case audioStopReceivedAt = "audio_stop_received_at"
+        case completedAt = "completed_at"
+        case insertCompletedAt = "insert_completed_at"
+        case bufferedMessages = "buffered_messages"
+        case frames
+        case audioMSEstimate = "audio_ms_estimate"
+        case decryptDecodeMS = "decrypt_decode_ms"
+        case asrMS = "asr_ms"
+        case llmMS = "llm_ms"
+        case responseWriteMS = "response_write_ms"
+        case insertMS = "insert_ms"
+        case totalAfterStopMS = "total_after_stop_ms"
+        case rawTranscriptChars = "raw_transcript_chars"
+        case finalTextChars = "final_text_chars"
+        case errorStage = "error_stage"
+        case error
+    }
+
+    init(
+        traceID: String,
+        deviceID: String,
+        acceptedAt: Date,
+        audioStopReceivedAt: Date?,
+        completedAt: Date?,
+        insertCompletedAt: Date?,
+        bufferedMessages: Int,
+        frames: Int,
+        audioMSEstimate: Int64,
+        decryptDecodeMS: Int64,
+        asrMS: Int64,
+        llmMS: Int64,
+        responseWriteMS: Int64,
+        insertMS: Int64,
+        totalAfterStopMS: Int64,
+        rawTranscriptChars: Int,
+        finalTextChars: Int,
+        errorStage: String?,
+        error: String?
+    ) {
+        self.traceID = traceID
+        self.deviceID = deviceID
+        self.acceptedAt = acceptedAt
+        self.audioStopReceivedAt = audioStopReceivedAt
+        self.completedAt = completedAt
+        self.insertCompletedAt = insertCompletedAt
+        self.bufferedMessages = bufferedMessages
+        self.frames = frames
+        self.audioMSEstimate = audioMSEstimate
+        self.decryptDecodeMS = decryptDecodeMS
+        self.asrMS = asrMS
+        self.llmMS = llmMS
+        self.responseWriteMS = responseWriteMS
+        self.insertMS = insertMS
+        self.totalAfterStopMS = totalAfterStopMS
+        self.rawTranscriptChars = rawTranscriptChars
+        self.finalTextChars = finalTextChars
+        self.errorStage = errorStage
+        self.error = error
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        traceID = try container.decode(String.self, forKey: .traceID)
+        deviceID = try container.decode(String.self, forKey: .deviceID)
+        acceptedAt = try Self.decodeDate(container, .acceptedAt)
+        audioStopReceivedAt = try Self.decodeOptionalDate(container, .audioStopReceivedAt)
+        completedAt = try Self.decodeOptionalDate(container, .completedAt)
+        insertCompletedAt = try Self.decodeOptionalDate(container, .insertCompletedAt)
+        bufferedMessages = try container.decode(Int.self, forKey: .bufferedMessages)
+        frames = try container.decode(Int.self, forKey: .frames)
+        audioMSEstimate = try container.decode(Int64.self, forKey: .audioMSEstimate)
+        decryptDecodeMS = try container.decode(Int64.self, forKey: .decryptDecodeMS)
+        asrMS = try container.decode(Int64.self, forKey: .asrMS)
+        llmMS = try container.decode(Int64.self, forKey: .llmMS)
+        responseWriteMS = try container.decode(Int64.self, forKey: .responseWriteMS)
+        insertMS = try container.decode(Int64.self, forKey: .insertMS)
+        totalAfterStopMS = try container.decode(Int64.self, forKey: .totalAfterStopMS)
+        rawTranscriptChars = try container.decode(Int.self, forKey: .rawTranscriptChars)
+        finalTextChars = try container.decode(Int.self, forKey: .finalTextChars)
+        errorStage = try container.decodeIfPresent(String.self, forKey: .errorStage)
+        error = try container.decodeIfPresent(String.self, forKey: .error)
+    }
+
+    private static func decodeDate(_ container: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) throws -> Date {
+        let value = try container.decode(String.self, forKey: key)
+        if let parsed = fractionalDateFormatter.date(from: value) ?? wholeSecondDateFormatter.date(from: value) {
+            return parsed
+        }
+        throw DecodingError.dataCorruptedError(forKey: key, in: container, debugDescription: "Expected ISO8601 date string.")
+    }
+
+    private static func decodeOptionalDate(_ container: KeyedDecodingContainer<CodingKeys>, _ key: CodingKeys) throws -> Date? {
+        guard let value = try container.decodeIfPresent(String.self, forKey: key), !value.isEmpty else {
+            return nil
+        }
+        if let parsed = fractionalDateFormatter.date(from: value) ?? wholeSecondDateFormatter.date(from: value) {
+            return parsed
+        }
+        throw DecodingError.dataCorruptedError(forKey: key, in: container, debugDescription: "Expected ISO8601 date string.")
+    }
+
+    private static let fractionalDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let wholeSecondDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
 }
 
 enum InjectionRecoveryAction: String, Equatable {
@@ -639,6 +785,14 @@ private struct AccessibilityGuidanceResponse: Decodable {
     }
 }
 
+private struct ControlDiagnosticsEnvelope: Decodable {
+    var latencyTraces: [ControlLatencyTrace]
+
+    enum CodingKeys: String, CodingKey {
+        case latencyTraces = "latency_traces"
+    }
+}
+
 private struct ControlErrorEnvelope: Decodable {
     var error: ControlErrorPayload
 }
@@ -715,6 +869,11 @@ struct LiveControlAPIClient: ControlAPIClient {
     func openAccessibilitySettings() async throws -> AccessibilityGuidance {
         let response: AccessibilityGuidanceResponse = try await send(path: "/v1/permissions/accessibility/open", method: "POST")
         return AccessibilityGuidance(permission: response.permission, opened: response.opened, settingsURL: response.settingsURL, message: response.message)
+    }
+
+    func fetchDiagnostics() async throws -> ControlDiagnostics {
+        let response: ControlDiagnosticsEnvelope = try await send(path: "/v1/diagnostics/export", method: "GET")
+        return ControlDiagnostics(latencyTraces: response.latencyTraces)
     }
 
     private func send<Response: Decodable>(path: String, method: String, body: Data? = nil) async throws -> Response {
@@ -834,6 +993,7 @@ final class AppShellViewModel: ObservableObject {
     @Published private(set) var isBusy = false
     @Published private(set) var lastUpdated: Date?
     @Published private(set) var lastErrorMessage: String?
+    @Published private(set) var latencyTraces: [ControlLatencyTrace] = []
 
     private let client: ControlAPIClient
     private let textCopier: RecoveryTextCopying
@@ -904,6 +1064,10 @@ final class AppShellViewModel: ObservableObject {
         ]
     }
 
+    var latestLatencyTrace: ControlLatencyTrace? {
+        latencyTraces.first
+    }
+
     var formattedUptime: String {
         guard let status else {
             return "Unavailable"
@@ -939,6 +1103,7 @@ final class AppShellViewModel: ObservableObject {
             self.injectionRecovery = nil
             self.lastUpdated = nowProvider()
             self.lastErrorMessage = serviceDisplayState == .error ? serviceDisplayState.helpText : nil
+            Task { await self.refreshDiagnostics() }
         } catch let error as ControlAPIClientError {
             handle(error: error)
         } catch {
@@ -961,6 +1126,7 @@ final class AppShellViewModel: ObservableObject {
             self.injectionRecovery = nil
             self.lastUpdated = nowProvider()
             self.lastErrorMessage = serviceDisplayState == .error ? serviceDisplayState.helpText : nil
+            Task { await self.refreshDiagnostics() }
         } catch let error as ControlAPIClientError {
             handle(error: error)
         } catch {
@@ -970,6 +1136,13 @@ final class AppShellViewModel: ObservableObject {
 
     func recoverService() async {
         await refresh()
+    }
+
+    func refreshDiagnostics() async {
+        guard let diagnostics = try? await client.fetchDiagnostics() else {
+            return
+        }
+        self.latencyTraces = diagnostics.latencyTraces
     }
 
     func performRecoveryAction() async {
@@ -1738,6 +1911,28 @@ struct DiagnosticsView: View {
                     }
                 }
 
+                DiagnosticSection(title: "Latency") {
+                    if let latest = viewModel.latestLatencyTrace {
+                        VStack(alignment: .leading, spacing: 10) {
+                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                                LatencyMetricCard(title: "Total After Stop", milliseconds: latest.totalAfterStopMS, warnAt: 1_500, criticalAt: 4_000)
+                                LatencyMetricCard(title: "ASR", milliseconds: latest.asrMS, warnAt: 800, criticalAt: 2_500)
+                                LatencyMetricCard(title: "LLM", milliseconds: latest.llmMS, warnAt: 800, criticalAt: 2_500)
+                                LatencyMetricCard(title: "Decode", milliseconds: latest.decryptDecodeMS, warnAt: 80, criticalAt: 250)
+                                LatencyMetricCard(title: "Response", milliseconds: latest.responseWriteMS, warnAt: 80, criticalAt: 250)
+                                LatencyMetricCard(title: "Insert", milliseconds: latest.insertMS, warnAt: 200, criticalAt: 800)
+                            }
+
+                            ForEach(viewModel.latencyTraces.prefix(5)) { trace in
+                                LatencyTraceRow(trace: trace)
+                            }
+                        }
+                    } else {
+                        Text("No voice latency traces recorded yet.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 DiagnosticSection(title: "Recovery") {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
@@ -1916,6 +2111,75 @@ struct DiagnosticPathRow: View {
         }
     }
 }
+
+struct LatencyMetricCard: View {
+    let title: String
+    let milliseconds: Int64
+    let warnAt: Int64
+    let criticalAt: Int64
+
+    private var tint: Color {
+        if milliseconds >= criticalAt { return .red }
+        if milliseconds >= warnAt { return .orange }
+        return .green
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Circle()
+                    .fill(tint)
+                    .frame(width: 7, height: 7)
+            }
+            Text(formatLatency(milliseconds))
+                .font(.body.monospaced().weight(.semibold))
+        }
+        .padding(10)
+        .background(.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+struct LatencyTraceRow: View {
+    let trace: ControlLatencyTrace
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(trace.traceID)
+                    .font(.caption.monospaced())
+                    .lineLimit(1)
+                Spacer()
+                Text(formatLatency(trace.totalAfterStopMS))
+                    .font(.caption.monospaced().weight(.semibold))
+            }
+            Text("frames \(trace.frames), audio \(formatLatency(trace.audioMSEstimate)), decode \(formatLatency(trace.decryptDecodeMS)), ASR \(formatLatency(trace.asrMS)), LLM \(formatLatency(trace.llmMS)), insert \(formatLatency(trace.insertMS))")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            if let error = trace.error, !error.isEmpty {
+                Text("\(trace.errorStage ?? "error"): \(error)")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .lineLimit(2)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private func formatLatency(_ milliseconds: Int64) -> String {
+    if milliseconds >= 1_000 {
+        return String(format: "%.2fs", Double(milliseconds) / 1_000.0)
+    }
+    return "\(milliseconds)ms"
+}
+
 struct StatusSummaryCard: View {
     @ObservedObject var viewModel: AppShellViewModel
 

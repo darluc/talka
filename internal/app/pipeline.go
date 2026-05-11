@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
+	"time"
 
 	"talka/internal/asr"
 	"talka/internal/inject"
@@ -47,6 +49,11 @@ type ProcessResult struct {
 	FinalText     string
 	Cleanup       llm.Result
 	Receipt       inject.Receipt
+}
+
+type PipelineTimings struct {
+	ASR time.Duration
+	LLM time.Duration
 }
 
 func NewPipeline(asrProvider ASRProvider, llmProvider LLMProvider, injector TextInjector) *Pipeline {
@@ -110,21 +117,40 @@ func (p *Pipeline) ProcessAudioFrames(ctx context.Context, metadata protocol.Aud
 }
 
 func (p *Pipeline) PrepareAudioFrames(ctx context.Context, metadata protocol.AudioMetadata, frames [][]byte) (ProcessResult, error) {
+	result, _, err := p.PrepareAudioFramesWithTimings(ctx, metadata, frames)
+	return result, err
+}
+
+func (p *Pipeline) PrepareAudioFramesWithTimings(ctx context.Context, metadata protocol.AudioMetadata, frames [][]byte) (ProcessResult, PipelineTimings, error) {
+	var timings PipelineTimings
+	asrStartedAt := time.Now()
 	transcript, err := p.asr.Transcribe(ctx, asr.Request{Metadata: metadata, Frames: frames})
+	timings.ASR = time.Since(asrStartedAt)
 	if err != nil {
-		return ProcessResult{}, err
+		return ProcessResult{}, timings, err
 	}
 
-	cleanup, err := p.llm.Cleanup(ctx, transcript.Transcript)
+	rawTranscript := strings.TrimSpace(transcript.Transcript)
+	if rawTranscript == "" {
+		return ProcessResult{
+			RawTranscript: "",
+			FinalText:     "",
+			Cleanup:       llm.Result{Text: "", RawTranscript: "", Status: llm.StatusCleaned},
+		}, timings, nil
+	}
+
+	llmStartedAt := time.Now()
+	cleanup, err := p.llm.Cleanup(ctx, rawTranscript)
+	timings.LLM = time.Since(llmStartedAt)
 	if err != nil {
-		return ProcessResult{}, err
+		return ProcessResult{}, timings, err
 	}
 
 	return ProcessResult{
-		RawTranscript: transcript.Transcript,
+		RawTranscript: rawTranscript,
 		FinalText:     cleanup.Text,
 		Cleanup:       cleanup,
-	}, nil
+	}, timings, nil
 }
 
 func (p *Pipeline) InsertText(ctx context.Context, text string) (inject.Receipt, error) {

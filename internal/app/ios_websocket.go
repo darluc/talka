@@ -3,9 +3,11 @@ package app
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,6 +68,9 @@ func (a *App) handleIOSAudioStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	traceID := newLatencyTraceID()
+	acceptedAt := time.Now()
+	a.latencyRecorder.Start(traceID, deviceID, acceptedAt)
 	a.logger.Info("iOS audio websocket accepted", "device_id", deviceID)
 	deadline := time.Now().Add(iosWebSocketSessionTimeout)
 	_ = conn.SetDeadline(deadline)
@@ -75,16 +80,21 @@ func (a *App) handleIOSAudioStream(w http.ResponseWriter, r *http.Request) {
 	for {
 		payload, opcode, err := readIOSWebSocketFrame(reader)
 		if err != nil {
+			a.recordLatencyError(traceID, "read", err)
+			a.completeLatencyTrace(traceID)
 			a.logger.Error("iOS audio websocket read failed", "device_id", deviceID, "error", err)
 			_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "read"))
 			return
 		}
 		if opcode == 0x8 {
+			a.completeLatencyTrace(traceID)
 			a.logger.Info("iOS audio websocket closed", "device_id", deviceID, "buffered_messages", len(messages))
 			return
 		}
 		message, err := decodeIOSAudioWireMessage(payload)
 		if err != nil {
+			a.recordLatencyError(traceID, "decode", err)
+			a.completeLatencyTrace(traceID)
 			a.logger.Error("iOS audio websocket decode failed", "device_id", deviceID, "error", err)
 			_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "decode"))
 			return
@@ -93,6 +103,8 @@ func (a *App) handleIOSAudioStream(w http.ResponseWriter, r *http.Request) {
 			a.logger.Info("iOS audio websocket control message", "device_id", deviceID, "type", message.Type, "seq", message.Seq)
 		}
 		if !iosWebSocketCanBuffer(len(messages) + 1) {
+			a.recordLatencyError(traceID, "buffer", fmt.Errorf("message_limit_exceeded"))
+			a.completeLatencyTrace(traceID)
 			a.logger.Error("iOS audio websocket message limit exceeded", "device_id", deviceID, "buffered_messages", len(messages), "limit", iosWebSocketMaxBufferedMessages)
 			_ = writeIOSWebSocketError(conn, iosAudioWebSocketError{Code: "message_limit_exceeded", Message: "audio session message limit exceeded"})
 			return
@@ -104,12 +116,21 @@ func (a *App) handleIOSAudioStream(w http.ResponseWriter, r *http.Request) {
 		if message.Type != protocol.MessageTypeAudioStop {
 			continue
 		}
+		stopReceivedAt := time.Now()
+		a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
+			trace.AudioStopReceivedAt = stopReceivedAt
+			trace.BufferedMessages = len(messages)
+		})
 		a.logger.Info("iOS audio websocket stop received", "device_id", deviceID, "buffered_messages", len(messages))
 		ctx, cancel := context.WithTimeout(r.Context(), time.Until(deadline))
-		result, err := a.ProcessEncryptedIOSAudioSession(ctx, deviceID, messages)
+		result, err := a.processEncryptedIOSAudioSession(ctx, deviceID, traceID, messages)
 		cancel()
 		if err != nil {
 			a.logger.Error("iOS audio session processing failed", "device_id", deviceID, "buffered_messages", len(messages), "error", err)
+			a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
+				trace.CompletedAt = time.Now()
+				trace.TotalAfterStopMS = durationMilliseconds(trace.CompletedAt.Sub(stopReceivedAt))
+			})
 			if writeErr := writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "process")); writeErr != nil {
 				a.logger.Error("iOS audio websocket error response write failed", "device_id", deviceID, "error", writeErr)
 			} else if closeErr := writeIOSWebSocketClose(conn, 1000, ""); closeErr != nil {
@@ -117,18 +138,29 @@ func (a *App) handleIOSAudioStream(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		a.logger.Info("iOS audio session processed", "device_id", deviceID, "buffered_messages", len(messages), "raw_transcript_chars", len(result.RawTranscript), "final_text_chars", len(result.FinalText))
+		processedAt := time.Now()
+		a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
+			trace.CompletedAt = processedAt
+			trace.TotalAfterStopMS = durationMilliseconds(processedAt.Sub(stopReceivedAt))
+		})
+		a.logger.Info("iOS audio session processed", "trace_id", traceID, "device_id", deviceID, "buffered_messages", len(messages), "raw_transcript_chars", len(result.RawTranscript), "final_text_chars", len(result.FinalText))
+		responseWriteStartedAt := time.Now()
 		if err := writeIOSWebSocketJSON(conn, iosAudioWebSocketResponse{OK: true, FinalText: result.FinalText}); err != nil {
+			a.recordLatencyError(traceID, "response_write", err)
 			a.logger.Error("iOS audio websocket response write failed", "device_id", deviceID, "error", err)
 		} else if closeErr := writeIOSWebSocketClose(conn, 1000, ""); closeErr != nil {
+			a.recordLatencyError(traceID, "response_close", closeErr)
 			a.logger.Error("iOS audio websocket close write failed", "device_id", deviceID, "error", closeErr)
 		}
-		a.queueIOSFinalTextInsertion(deviceID, result.FinalText)
+		a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
+			trace.ResponseWriteMS = durationMilliseconds(time.Since(responseWriteStartedAt))
+		})
+		a.queueIOSFinalTextInsertion(traceID, deviceID, result.FinalText)
 		return
 	}
 }
 
-func (a *App) queueIOSFinalTextInsertion(deviceID, finalText string) {
+func (a *App) queueIOSFinalTextInsertion(traceID, deviceID, finalText string) {
 	if strings.TrimSpace(finalText) == "" {
 		return
 	}
@@ -145,8 +177,14 @@ func (a *App) queueIOSFinalTextInsertion(deviceID, finalText string) {
 		ctx, cancel := context.WithTimeout(context.Background(), iosInsertTimeout)
 		defer cancel()
 
+		insertStartedAt := time.Now()
 		receipt, err := pipeline.InsertText(ctx, text)
+		a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
+			trace.InsertCompletedAt = time.Now()
+			trace.InsertMS = durationMilliseconds(time.Since(insertStartedAt))
+		})
 		if err != nil {
+			a.recordLatencyError(traceID, "insert", err)
 			var insertErr *inject.InsertError
 			if errors.As(err, &insertErr) {
 				a.logger.Error("iOS final text insertion failed", "device_id", deviceID, "code", insertErr.Code, "message", insertErr.UserMessage, "error", insertErr.Err)
@@ -156,8 +194,24 @@ func (a *App) queueIOSFinalTextInsertion(deviceID, finalText string) {
 			return
 		}
 
-		a.logger.Info("iOS final text inserted", "device_id", deviceID, "target", receipt.Target, "status", receipt.Status, "restore_status", receipt.RestoreStatus)
+		a.logger.Info("iOS final text inserted", "trace_id", traceID, "device_id", deviceID, "target", receipt.Target, "status", receipt.Status, "restore_status", receipt.RestoreStatus)
 	}(finalText, pipeline)
+}
+
+func newLatencyTraceID() string {
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return fmt.Sprintf("trace-%d", time.Now().UnixNano())
+	}
+	return "trace-" + hex.EncodeToString(raw[:])
+}
+
+func (a *App) completeLatencyTrace(traceID string) {
+	a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
+		if trace.CompletedAt.IsZero() {
+			trace.CompletedAt = time.Now()
+		}
+	})
 }
 
 func shouldLogIOSAudioMessage(message session.EncryptedMessage, bufferedMessages int) bool {

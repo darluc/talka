@@ -156,6 +156,51 @@ func TestPipelinePrepareAudioFramesSkipsInsertionUntilRequested(t *testing.T) {
 	}
 }
 
+func TestPipelinePrepareAudioFramesWithTimingsReportsASRAndLLMDurations(t *testing.T) {
+	runtime := &asr.FakeRuntime{Ready: true}
+	server := httptest.NewServer(runtime.Handler())
+	defer server.Close()
+
+	provider := asr.NewSidecarProvider(asr.Config{URL: "ws" + strings.TrimPrefix(server.URL, "http") + "/ws", Version: protocol.VersionV1Alpha1, Timeout: 2 * time.Second})
+	pipeline := NewPipeline(provider, llm.NewFakeProvider(llm.FakeConfig{}), inject.NewFakeInjector())
+
+	result, timings, err := pipeline.PrepareAudioFramesWithTimings(context.Background(), asr.DefaultAudioMetadata(), [][]byte{[]byte("frame-1")})
+	if err != nil {
+		t.Fatalf("PrepareAudioFramesWithTimings() error = %v", err)
+	}
+	if result.RawTranscript == "" || result.FinalText == "" {
+		t.Fatalf("result = %+v, want transcript and final text", result)
+	}
+	if timings.ASR <= 0 {
+		t.Fatalf("timings.ASR = %v, want positive duration", timings.ASR)
+	}
+	if timings.LLM <= 0 {
+		t.Fatalf("timings.LLM = %v, want positive duration", timings.LLM)
+	}
+}
+
+func TestPipelinePrepareAudioFramesSkipsLLMWhenASRTranscriptIsEmpty(t *testing.T) {
+	llmProvider := &countingLLMProvider{}
+	pipeline := NewPipeline(emptyASRProvider{}, llmProvider, inject.NewFakeInjector())
+
+	result, timings, err := pipeline.PrepareAudioFramesWithTimings(context.Background(), asr.DefaultAudioMetadata(), [][]byte{[]byte("frame-1")})
+	if err != nil {
+		t.Fatalf("PrepareAudioFramesWithTimings() error = %v", err)
+	}
+	if llmProvider.calls != 0 {
+		t.Fatalf("LLM Cleanup calls = %d, want 0 for empty transcript", llmProvider.calls)
+	}
+	if result.RawTranscript != "" || result.FinalText != "" {
+		t.Fatalf("result = %+v, want empty transcript and final text", result)
+	}
+	if timings.ASR <= 0 {
+		t.Fatalf("timings.ASR = %v, want positive duration", timings.ASR)
+	}
+	if timings.LLM != 0 {
+		t.Fatalf("timings.LLM = %v, want 0 when LLM is skipped", timings.LLM)
+	}
+}
+
 type failingInjector struct {
 	err error
 }
@@ -167,6 +212,21 @@ func (i failingInjector) Insert(context.Context, string) (inject.Receipt, error)
 type recordingInjector struct {
 	calls int
 	text  string
+}
+
+type emptyASRProvider struct{}
+
+func (emptyASRProvider) Transcribe(context.Context, asr.Request) (asr.Result, error) {
+	return asr.Result{}, nil
+}
+
+type countingLLMProvider struct {
+	calls int
+}
+
+func (p *countingLLMProvider) Cleanup(_ context.Context, transcript string) (llm.Result, error) {
+	p.calls++
+	return llm.Result{Text: transcript, RawTranscript: transcript, Status: llm.StatusCleaned, Provider: "counting"}, nil
 }
 
 func (i *recordingInjector) Insert(_ context.Context, text string) (inject.Receipt, error) {

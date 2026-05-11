@@ -37,6 +37,38 @@ final class TalkaMacTests: XCTestCase {
         }
     }
 
+    func testRefreshLoadsLatencyDiagnostics() async throws {
+        let trace = ControlLatencyTrace(
+            traceID: "trace-1",
+            deviceID: "iphone-1",
+            acceptedAt: Date(timeIntervalSince1970: 0),
+            audioStopReceivedAt: nil,
+            completedAt: nil,
+            insertCompletedAt: nil,
+            bufferedMessages: 8,
+            frames: 6,
+            audioMSEstimate: 120,
+            decryptDecodeMS: 3,
+            asrMS: 220,
+            llmMS: 330,
+            responseWriteMS: 4,
+            insertMS: 5,
+            totalAfterStopMS: 557,
+            rawTranscriptChars: 6,
+            finalTextChars: 6,
+            errorStage: nil,
+            error: nil
+        )
+        let client = FakeControlAPIClient(diagnosticsResults: [.success(ControlDiagnostics(latencyTraces: [trace]))])
+        let viewModel = AppShellViewModel(client: client)
+
+        await viewModel.refresh()
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertEqual(viewModel.latencyTraces.first?.traceID, "trace-1")
+        XCTAssertEqual(viewModel.latestLatencyTrace?.totalAfterStopMS, 557)
+    }
+
     func testRefreshShowsServiceUnavailableAndRecoveryCanRecover() async {
         let client = FakeControlAPIClient(
             statusResults: [
@@ -363,6 +395,49 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertEqual(devices.first?.paired, true)
         let lastSeenAt = try XCTUnwrap(devices.first?.lastSeenAt)
         XCTAssertEqual(lastSeenAt.timeIntervalSince1970, 1_777_526_018.272_792, accuracy: 0.001)
+    }
+
+    func testLiveControlAPIClientFetchDiagnosticsDecodesFractionalSecondLatencyDates() async throws {
+        let responseBody = #"""
+        {
+          "latency_traces": [
+            {
+              "trace_id": "trace-abc",
+              "device_id": "iphone-1",
+              "accepted_at": "2026-05-11T21:40:30.123456+08:00",
+              "audio_stop_received_at": "2026-05-11T21:40:31.123456+08:00",
+              "completed_at": "2026-05-11T21:40:31.623456+08:00",
+              "insert_completed_at": "2026-05-11T21:40:31.723456+08:00",
+              "buffered_messages": 8,
+              "frames": 6,
+              "audio_ms_estimate": 120,
+              "decrypt_decode_ms": 3,
+              "asr_ms": 220,
+              "llm_ms": 330,
+              "response_write_ms": 4,
+              "insert_ms": 5,
+              "total_after_stop_ms": 557,
+              "raw_transcript_chars": 6,
+              "final_text_chars": 6
+            }
+          ]
+        }
+        """#
+
+        let client = makeLiveClient { request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/v1/diagnostics/export")
+            return try Self.httpResponse(body: responseBody)
+        }
+
+        let diagnostics = try await client.fetchDiagnostics()
+
+        let trace = try XCTUnwrap(diagnostics.latencyTraces.first)
+        let completedAt = try XCTUnwrap(trace.completedAt)
+        XCTAssertEqual(trace.traceID, "trace-abc")
+        XCTAssertEqual(trace.acceptedAt.timeIntervalSince1970, 1_778_506_830.123_456, accuracy: 0.001)
+        XCTAssertEqual(completedAt.timeIntervalSince1970, 1_778_506_831.623_456, accuracy: 0.001)
+        XCTAssertEqual(trace.totalAfterStopMS, 557)
     }
 
     func testSaveConfigPersistsEditedSettingsThroughClient() async {
@@ -946,6 +1021,7 @@ private final class FakeControlAPIClient: ControlAPIClient {
     private var statusResults: [Result<ControlStatus, Error>]
     private var devicesResults: [Result<[ControlDevice], Error>]
     private var configResults: [Result<ControlConfig, Error>]
+    private var diagnosticsResults: [Result<ControlDiagnostics, Error>]
     private var pairingResults: [Result<ControlPairingSession, Error>]
     private var accessibilityResults: [Result<AccessibilityGuidance, Error>]
     private(set) var savedConfig: ControlConfig?
@@ -957,12 +1033,14 @@ private final class FakeControlAPIClient: ControlAPIClient {
         statusResults: [Result<ControlStatus, Error>] = [.success(.fixture())],
         devicesResults: [Result<[ControlDevice], Error>] = [.success([])],
         configResults: [Result<ControlConfig, Error>] = [.success(.fixture())],
+        diagnosticsResults: [Result<ControlDiagnostics, Error>] = [.success(ControlDiagnostics(latencyTraces: []))],
         pairingResults: [Result<ControlPairingSession, Error>] = [.success(.fixture())],
         accessibilityResults: [Result<AccessibilityGuidance, Error>] = [.success(.fixture())]
     ) {
         self.statusResults = statusResults
         self.devicesResults = devicesResults
         self.configResults = configResults
+        self.diagnosticsResults = diagnosticsResults
         self.pairingResults = pairingResults
         self.accessibilityResults = accessibilityResults
     }
@@ -982,6 +1060,10 @@ private final class FakeControlAPIClient: ControlAPIClient {
     func fetchConfig() async throws -> ControlConfig {
         fetchConfigCalls += 1
         return try next(from: &configResults)
+    }
+
+    func fetchDiagnostics() async throws -> ControlDiagnostics {
+        try next(from: &diagnosticsResults)
     }
 
     func saveConfig(_ config: ControlConfig) async throws -> ControlConfig {

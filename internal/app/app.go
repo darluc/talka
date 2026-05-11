@@ -29,20 +29,21 @@ const (
 var newIOSPairingStore = func() pairing.Store { return pairing.NewDarwinStore() }
 
 type App struct {
-	mu           sync.RWMutex
-	cfg          config.Config
-	configPath   string
-	configDir    string
-	startedAt    time.Time
-	logger       *slog.Logger
-	devices      map[string]Device
-	pairing      *PairingSession
-	pipeline     *Pipeline
-	asrStatus    componentReadiness
-	ollamaStatus componentReadiness
-	iosSessions  map[string]*iosAudioSession
-	iosPairing   *pairing.StartResponse
-	iosManager   *pairing.Manager
+	mu              sync.RWMutex
+	cfg             config.Config
+	configPath      string
+	configDir       string
+	startedAt       time.Time
+	logger          *slog.Logger
+	devices         map[string]Device
+	pairing         *PairingSession
+	pipeline        *Pipeline
+	asrStatus       componentReadiness
+	ollamaStatus    componentReadiness
+	iosSessions     map[string]*iosAudioSession
+	iosPairing      *pairing.StartResponse
+	iosManager      *pairing.Manager
+	latencyRecorder *LatencyRecorder
 }
 
 type componentReadiness struct {
@@ -169,10 +170,11 @@ type IOSPairingResponse struct {
 }
 
 type DiagnosticsExportResponse struct {
-	Config     config.Config              `json:"config"`
-	Devices    []Device                   `json:"devices"`
-	Pairing    *DiagnosticsPairingSession `json:"pairing,omitempty"`
-	Redactions []string                   `json:"redactions"`
+	Config        config.Config              `json:"config"`
+	Devices       []Device                   `json:"devices"`
+	Pairing       *DiagnosticsPairingSession `json:"pairing,omitempty"`
+	Redactions    []string                   `json:"redactions"`
+	LatencyTraces []LatencyTrace             `json:"latency_traces"`
 }
 
 type DiagnosticsPairingSession struct {
@@ -210,14 +212,15 @@ func NewWithPipeline(cfg config.Config, configPath string, logger *slog.Logger, 
 	}
 
 	app := &App{
-		cfg:         cfg,
-		configPath:  configPath,
-		configDir:   configDir,
-		startedAt:   time.Now(),
-		logger:      logger,
-		devices:     map[string]Device{},
-		pipeline:    pipeline,
-		iosSessions: map[string]*iosAudioSession{},
+		cfg:             cfg,
+		configPath:      configPath,
+		configDir:       configDir,
+		startedAt:       time.Now(),
+		logger:          logger,
+		devices:         map[string]Device{},
+		pipeline:        pipeline,
+		iosSessions:     map[string]*iosAudioSession{},
+		latencyRecorder: NewLatencyRecorder(defaultLatencyTraceLimit),
 	}
 	app.iosManager = pairing.NewManager(pairing.Config{ServerDeviceID: "talka-mac", ServerDeviceName: cfg.Server.ServiceName, Store: newIOSPairingStore(), PairingTTL: pairingLifetime, InactivityTimeout: 10 * time.Minute})
 	app.logger.Info("app started",
@@ -495,10 +498,11 @@ func (a *App) handleDiagnosticsExport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, DiagnosticsExportResponse{
-		Config:     a.cfg,
-		Devices:    devices,
-		Pairing:    pairing,
-		Redactions: diagnosticsRedactions(a.cfg),
+		Config:        a.cfg,
+		Devices:       devices,
+		Pairing:       pairing,
+		Redactions:    diagnosticsRedactions(a.cfg),
+		LatencyTraces: a.latencyRecorder.Snapshot(),
 	})
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"talka/internal/pairing"
 	"talka/internal/protocol"
@@ -121,31 +122,71 @@ func (a *App) resumeIOSPairing(r *http.Request, request IOSResumeRequest) (IOSPa
 }
 
 func (a *App) ProcessEncryptedIOSAudioSession(ctx context.Context, deviceID string, messages []session.EncryptedMessage) (ProcessResult, error) {
+	return a.processEncryptedIOSAudioSession(ctx, deviceID, "", messages)
+}
+
+func (a *App) processEncryptedIOSAudioSession(ctx context.Context, deviceID, traceID string, messages []session.EncryptedMessage) (ProcessResult, error) {
 	a.mu.Lock()
 	active := a.iosSessions[deviceID]
 	pipeline := a.pipeline
 	if active == nil {
 		a.mu.Unlock()
-		return ProcessResult{}, fmt.Errorf("no active audio session for device %q", deviceID)
+		err := fmt.Errorf("no active audio session for device %q", deviceID)
+		a.recordLatencyError(traceID, "session", err)
+		return ProcessResult{}, err
 	}
 	if pipeline == nil {
 		a.mu.Unlock()
-		return ProcessResult{}, fmt.Errorf("audio pipeline is not configured")
+		err := fmt.Errorf("audio pipeline is not configured")
+		a.recordLatencyError(traceID, "pipeline", err)
+		return ProcessResult{}, err
 	}
+	decryptStartedAt := time.Now()
 	metadata, frames, err := decryptIOSAudioMessages(active.machine, messages)
+	decryptDuration := time.Since(decryptStartedAt)
 	a.mu.Unlock()
 	if err != nil {
+		a.recordLatencyError(traceID, "decrypt_decode", err)
 		a.logger.Error("iOS audio session decrypt failed", "device_id", deviceID, "encrypted_messages", len(messages), "error", err)
 		return ProcessResult{}, err
 	}
+	a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
+		trace.Frames = len(frames)
+		trace.AudioMSEstimate = int64(len(frames) * metadata.FrameDurationMS)
+		trace.DecryptDecodeMS = durationMilliseconds(decryptDuration)
+	})
 	a.logger.Info("iOS audio session decrypted", "device_id", deviceID, "encrypted_messages", len(messages), "frames", len(frames), "sample_rate", metadata.SampleRate, "channels", metadata.Channels, "encoding", metadata.Encoding, "frame_duration_ms", metadata.FrameDurationMS)
-	result, err := pipeline.PrepareAudioFrames(ctx, metadata, frames)
+	result, timings, err := pipeline.PrepareAudioFramesWithTimings(ctx, metadata, frames)
 	if err != nil {
+		a.recordLatencyError(traceID, "pipeline", err)
 		a.logger.Error("iOS audio pipeline failed", "device_id", deviceID, "frames", len(frames), "error", err)
 		return ProcessResult{}, err
 	}
+	a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
+		trace.ASRMS = durationMilliseconds(timings.ASR)
+		trace.LLMMS = durationMilliseconds(timings.LLM)
+		trace.RawTranscriptChars = len(result.RawTranscript)
+		trace.FinalTextChars = len(result.FinalText)
+	})
 	a.logger.Info("iOS audio pipeline prepared final text", "device_id", deviceID, "frames", len(frames), "raw_transcript_chars", len(result.RawTranscript), "final_text_chars", len(result.FinalText))
 	return result, nil
+}
+
+func (a *App) recordLatencyError(traceID, stage string, err error) {
+	if err == nil {
+		return
+	}
+	a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
+		trace.ErrorStage = stage
+		trace.Error = sanitizeLatencyError(stage, err)
+	})
+}
+
+func sanitizeLatencyError(stage string, err error) string {
+	if err == nil {
+		return ""
+	}
+	return iosWebSocketErrorCode(err, stage).Code
 }
 
 func iosPairingResponseFromResult(r *http.Request, deviceID, deviceName, serverDeviceID, serverDeviceName string, serverIdentityPublicKey, serverEphemeralPublicKey, confirmation, sessionID []byte) IOSPairingResponse {

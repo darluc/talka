@@ -6,7 +6,7 @@ Talka uses a split local architecture:
 
 - iOS app: audio capture and user-facing microphone controls.
 - macOS Go service: pairing, encrypted transport, audio session control, ASR orchestration, Ollama post-processing, and text insertion.
-- macOS SwiftUI shell: menu bar UI, PIN window, settings, and permission guidance.
+- macOS SwiftUI shell: menu bar UI, settings, diagnostics, native Accessibility state, and the local paste broker.
 - Embedded FunASR C++/ONNX Runtime: default local speech recognition backend packaged inside the macOS app bundle.
 - External FunASR runtime or legacy Talka sidecar: optional advanced compatibility backends.
 - Ollama: local LLM post-processing.
@@ -22,8 +22,10 @@ flowchart LR
   EXT -.-> GO
   GO --> OLLAMA["Ollama\nText Cleanup + Final Polish"]
   OLLAMA --> GO
-  GO --> INJECT["macOS Text Injection\nClipboard + Cmd+V"]
+  GO --> PB["Unix Socket Paste Broker\nSwift/App Process"]
+  PB --> INJECT["macOS Text Injection\nClipboard + Cmd+V"]
   UI["macOS SwiftUI/Menu Bar"] --> GO
+  UI --> PB
 ```
 
 ## Repository Layout
@@ -103,9 +105,12 @@ The SwiftUI layer owns:
 
 - Menu bar item.
 - Settings windows.
-- PIN pairing window.
+- Integrated status and PIN display.
 - Accessibility permission guidance.
 - Device management UI.
+- Diagnostics UI.
+- Native Accessibility permission checks with `AXIsProcessTrusted()`.
+- Local Unix domain socket paste broker for posting Cmd+V from the app process.
 
 The Go service owns:
 
@@ -130,6 +135,22 @@ GET  /v1/config
 PUT  /v1/config
 POST /v1/permissions/accessibility/open
 ```
+
+The tray menu is intentionally minimal:
+
+```text
+Settings
+Quit
+```
+
+The tray icon's green dot is computed in the SwiftUI shell and requires all of the following:
+
+- Service ready.
+- AI API healthy.
+- ASR API healthy.
+- Native Accessibility permission granted.
+
+The app must not rely only on `GET /v1/status` for Accessibility state, because the Go service may report `unknown` while the Swift app process can query the authoritative macOS TCC state.
 
 ## Discovery
 
@@ -242,7 +263,7 @@ TalkaMac.app
   Contents/Frameworks/*.dylib
 ```
 
-Supported provider modes:
+Internal provider modes:
 
 ```text
 funasr_embedded   bundled runtime + bundled models
@@ -250,6 +271,15 @@ funasr_external   direct websocket connection to external FunASR runtime
 sidecar           compatibility mode for legacy Talka websocket sidecar
 funasr_container  optional developer or migration mode
 ```
+
+User-facing ASR mode:
+
+```text
+Embedded   maps to funasr_embedded
+External   maps to funasr_external
+```
+
+The settings UI intentionally exposes only `Embedded` and `External`. FunASR's internal recognition mode, such as `2pass`, remains a runtime configuration detail and should not be presented as the product-level ASR mode.
 
 In embedded mode, the Go service starts, monitors, and restarts the bundled runtime. In external mode, the Go service skips process ownership and performs direct websocket health checks instead. In legacy mode, the Go service talks to the older sidecar contract for backward compatibility.
 
@@ -319,24 +349,61 @@ The final cleanup prompt must be strict:
 
 Primary mode:
 
-- Clipboard paste with Accessibility-driven Cmd+V.
+- Clipboard paste with a Swift-owned Accessibility-driven Cmd+V.
 
 Required macOS permission:
 
 - Accessibility permission for the Talka macOS app.
 
+Processes:
+
+```text
+TalkaMac.app
+  SwiftUI app process
+  LocalPasteBroker       /tmp/talka-paste-<pid>.sock
+  talka-server           TALKA_PASTE_BROKER_SOCKET=/tmp/talka-paste-<pid>.sock
+```
+
+Broker protocol:
+
+```json
+{"op":"preflight"}
+{"op":"paste"}
+```
+
+Broker responses:
+
+```json
+{"ok":true}
+{"ok":false,"error":"accessibility_missing"}
+{"ok":false,"error":"bad_request"}
+```
+
 Clipboard insertion steps:
 
-1. Read current clipboard.
-2. Write final text.
-3. Send Cmd+V to the active app.
-4. Restore prior clipboard after a short delay if unchanged by the user.
+1. Go asks the Swift paste broker to run `preflight`.
+2. The broker checks `AXIsProcessTrusted()` in the app process.
+3. If Accessibility is missing, Go returns `accessibility_missing` and does not write the clipboard.
+4. Go reads the current clipboard.
+5. Go writes final text.
+6. Go asks the broker to run `paste`.
+7. The broker posts Cmd+V with CoreGraphics.
+8. Go restores prior clipboard after a short delay if unchanged by the user.
 
 Failure handling:
 
-- If Accessibility permission is missing, show settings guidance.
+- If Accessibility permission is missing, show settings guidance and avoid clipboard mutation.
 - If paste fails, keep final text in Talka's transcript history and show a copy button.
 - If clipboard restore fails, log a warning and surface it in diagnostics.
+
+The broker is a Unix domain socket instead of HTTP. It is local to the app process, uses a per-process path under `/tmp`, is chmodded user-only, and avoids exposing a general-purpose local HTTP paste endpoint.
+
+Important macOS TCC behavior:
+
+- TCC Accessibility trust is tied to the running app's signing identity and bundle identity.
+- Ad-hoc signed builds have no stable TeamIdentifier and can change code hash after repackaging.
+- If Settings shows the app as authorized but `AXIsProcessTrusted()` returns false, the likely recovery is removing the old Accessibility entry and granting permission to the currently installed app.
+- Long term, release builds should use stable signing to reduce TCC churn.
 
 ## Configuration
 
@@ -395,6 +462,16 @@ asr:
   sample_rate: 16000
 ```
 
+Settings mapping:
+
+- `llm.base_url` maps to AI Endpoint.
+- `llm.model` maps to AI Model.
+- `llm.timeout_seconds` maps to AI Timeout.
+- `asr.provider` maps to ASR Mode.
+- `asr.host` and `asr.port` map to ASR Endpoint and ASR Port.
+- `asr.host` and `asr.port` are editable only when `asr.provider` is `funasr_external`.
+- `asr.mode` remains an internal runtime value such as `2pass`.
+
 Secrets and paired-device keys should live in Keychain, not in this YAML file.
 
 ## Error Handling
@@ -411,6 +488,7 @@ Important error classes:
 - Ollama unavailable.
 - Accessibility permission missing.
 - Active app rejected paste.
+- TCC entry points at an old ad-hoc-signed app identity.
 
 Each error should include:
 
@@ -429,6 +507,7 @@ Log structured events:
 - ASR segment latency.
 - Ollama request latency.
 - Text insertion success or failure.
+- Paste broker preflight failure.
 
 Do not log raw audio or full transcript unless diagnostic capture is explicitly enabled by the user.
 
@@ -439,6 +518,7 @@ Do not log raw audio or full transcript unless diagnostic capture is explicitly 
 - PIN pairing authenticates first contact.
 - Keychain stores trusted device identity.
 - Embedded ASR runtime listens only on localhost or Unix socket.
+- Paste broker uses a per-process Unix domain socket and accepts only `preflight` and `paste`.
 - The packaged macOS app must not require Docker in the default path.
 - Ollama is called only at the configured local URL by default.
 - No cloud endpoint should be introduced without explicit configuration.

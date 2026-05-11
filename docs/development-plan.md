@@ -107,9 +107,11 @@ Goal: insert final text into the focused app.
 
 Tasks:
 
-- Implement Accessibility permission detection.
+- Implement native Accessibility permission detection in the Swift app process with `AXIsProcessTrusted()`.
 - Add UI guidance to open macOS Privacy & Security settings.
-- Implement clipboard save, paste, and restore.
+- Implement a Swift local paste broker over Unix domain socket.
+- Add a broker `preflight` operation before clipboard mutation.
+- Implement clipboard save, paste, and restore in Go.
 - Add insertion history for failed paste recovery.
 - Test against common apps:
   - Apple Notes.
@@ -121,8 +123,10 @@ Acceptance:
 
 - Text can be pasted into common focused inputs.
 - Missing permission is detected before insertion.
+- Missing permission does not mutate the clipboard.
 - Clipboard is restored after successful insertion.
 - Failed insertion keeps the final text recoverable.
+- Ad-hoc signing and TCC reset behavior are documented for local test builds.
 
 ## Milestone 5: Local Discovery
 
@@ -213,20 +217,25 @@ Goal: make the MVP configurable and maintainable.
 
 Tasks:
 
-- Add macOS settings window.
-- Configure Ollama URL and model.
-- Configure ASR provider mode, runtime path, host, and model paths.
-- Show ASR runtime health.
-- Show paired devices.
-- Allow forgetting a paired device.
-- Add log export.
+- Add compact macOS settings window.
+- Combine service state, Accessibility state, PIN, and countdown in the top status area.
+- Configure AI endpoint, AI model, and AI timeout.
+- Configure user-facing ASR mode as `Embedded` or `External`.
+- Enable ASR host and port editing only in `External` mode.
+- Show AI API and ASR API health inline.
+- Show connected devices at the bottom with name and connection time.
+- Move diagnostics into a separate window focused on failure evidence, runtime evidence, and recovery.
+- Keep low-frequency actions such as Diagnostics in the footer.
 
 Acceptance:
 
 - User can change Ollama endpoint without editing files.
 - User can see whether ASR runtime is healthy.
-- User can remove paired devices.
-- Diagnostics are useful without exposing private audio by default.
+- User can see connected devices and connection times.
+- Settings do not expose advanced or low-value controls in the main compact view.
+- Diagnostics are useful without duplicating the settings page or exposing private audio by default.
+- Tray menu contains only Settings and Quit.
+- Tray green dot only lights when service, AI, ASR, and native Accessibility permission are all healthy.
 
 ## Milestone 10: Packaging
 
@@ -239,6 +248,9 @@ Tasks:
 - Bundle or download ONNX models.
 - Bundle ONNX Runtime dylibs.
 - Handle app signing and permissions.
+- Ensure Dock icon uses the rounded app icon asset.
+- Ensure tray icon uses the latest template SVG-derived asset at the correct menu bar size.
+- Document TCC behavior for ad-hoc builds and use stable signing for release builds.
 - Add first-run onboarding.
 - Build iOS app with required permissions.
 

@@ -68,38 +68,75 @@ The MVP can use a single-screen interface. Settings can remain minimal: selected
 
 ### macOS App
 
-The macOS app should run quietly in the menu bar, because the main product value happens in other apps.
+The macOS app should run quietly in the menu bar, because the main product value happens in other apps. The settings surface should feel like a compact macOS control panel, not an advanced developer console.
 
 Primary UI:
 
-- Menu bar status item.
-- Service status: listening, paired, recording, transcribing, inserting text.
-- PIN pairing window.
-- Configuration window.
-- Permission helper for Accessibility access.
-- Diagnostics view for local runtime status.
+- Menu bar status item with a green dot only when service, AI, ASR, and native Accessibility permission are all healthy.
+- Menu bar menu with only `Settings` and `Quit`.
+- Settings window for the daily control surface.
+- Separate diagnostics window for failure evidence and recovery actions.
+- PIN pairing display integrated into the top status area.
+- Connected-device list at the bottom of settings.
+
+Settings layout:
+
+- Top status card combines:
+  - Service state.
+  - Native Accessibility state.
+  - Current six-digit PIN.
+  - PIN refresh countdown.
+- The Ready headline should be visually secondary to the useful state controls.
+- The PIN countdown sits below or next to the PIN without causing layout jitter when seconds update.
+- `Service listening` is actionable and can be used to test or recover the service path.
+- `Accessibility OK` / `Accessibility Required` is actionable and opens the permission flow.
+- `Interfaces` contains only settings the user can reasonably change:
+  - AI endpoint.
+  - AI model.
+  - AI timeout.
+  - ASR mode.
+  - External ASR endpoint and port.
+- AI API and ASR API health are shown inline in the interfaces section.
+- Connected devices show device name plus connection time. They do not show low-value actions such as `Forget` in the main compact view.
+- Footer contains Diagnostics, Reset Changes, Save, last update time, and config path.
 
 Configuration:
 
-- ASR provider selection: embedded runtime, external FunASR runtime, or legacy Talka sidecar.
-- ASR runtime path.
-- ASR model paths.
-- Ollama base URL.
-- Ollama model.
-- Text insertion mode.
-- Paired device list.
-- Debug logging toggle.
+- AI endpoint: configurable Ollama/OpenAI-compatible endpoint.
+- AI model.
+- AI timeout.
+- ASR mode: `Embedded` or `External`.
+- ASR endpoint and port, editable only when ASR mode is `External`.
+- Paired or connected device list.
+
+ASR mode is a product-level setting. It must not expose FunASR's internal runtime mode such as `2pass` as the user-facing ASR mode. `Embedded` means Talka launches the bundled runtime and bundled models; `External` means Talka connects to a separately managed local ASR service.
+
+Diagnostics layout:
+
+- Diagnostics should not duplicate the settings page.
+- It should answer: what is broken, where is it running from, and what can the user do next?
+- It should include:
+  - Overall readiness.
+  - Service, ASR runtime, AI API, and Accessibility status cards.
+  - Failure evidence from the control API and runtime.
+  - Runtime evidence such as config path, control API address, ASR runtime path, model path, and last refresh.
+  - Recovery actions including refresh, opening Accessibility settings, and copying recoverable text when paste fails.
 
 ### Focused-App Text Entry
 
-For the first version, text insertion should use clipboard paste:
+For the first version, text insertion uses clipboard paste guarded by a native macOS Accessibility preflight:
 
-1. Save the current clipboard content.
-2. Write the final Talka text to the clipboard.
-3. Send Cmd+V through macOS Accessibility APIs.
-4. Restore the previous clipboard after a short delay.
+1. Ask the Swift app's local paste broker to run a preflight check.
+2. The broker checks `AXIsProcessTrusted()` in the app process.
+3. If Accessibility is missing, return a recoverable `accessibility_missing` error before changing the clipboard.
+4. Save the current clipboard content.
+5. Write the final Talka text to the clipboard.
+6. Ask the broker to send Cmd+V through CoreGraphics.
+7. Restore the previous clipboard after a short delay when restoration is enabled and the user has not overwritten it.
 
 This approach is more compatible than synthesizing every character as keyboard events. Direct key event insertion can be added later as a fallback or advanced mode.
+
+The key product requirement is to avoid half-success. Talka must not silently leave the final text in the clipboard when Accessibility prevents paste into the target app. When paste cannot proceed, the user should see a clear recovery state and the recognized text should remain recoverable.
 
 ## Audio Interaction Model
 
@@ -175,9 +212,10 @@ Talka is local-first.
 
 - Embedded ASR runtime packaging on macOS may be the hardest engineering part.
 - macOS Accessibility permission may confuse users unless onboarding is clear.
+- Ad-hoc signed macOS builds can lose TCC Accessibility trust after repackaging; users may need to remove the old app entry and grant permission to the current installed app.
 - Local network permission on iOS must be requested at the right moment.
 - Real-time ASR quality depends on chunking and VAD behavior.
-- Clipboard-based insertion can briefly replace the user's clipboard if restoration fails.
+- Clipboard-based insertion can briefly replace the user's clipboard if restoration fails, so preflight and recovery behavior are critical.
 - Ollama text optimization can over-edit unless prompts and tests are strict.
 
 ## MVP Acceptance Criteria
@@ -190,4 +228,8 @@ Talka is local-first.
 - Ollama can clean the recognized text.
 - macOS can paste the final text into common apps such as Notes, Safari text fields, WeChat, and VS Code.
 - The user can configure Ollama URL and model.
+- The user can configure AI endpoint, AI model, AI timeout, ASR mode, and external ASR host/port from the macOS settings window.
+- ASR host and port are disabled while ASR mode is embedded.
+- Settings and tray status reflect native Accessibility permission, not only the Go service's control API.
+- Missing Accessibility permission is detected before clipboard mutation.
 - The system can restart and reconnect to a previously paired device.

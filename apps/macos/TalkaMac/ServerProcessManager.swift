@@ -18,14 +18,16 @@ final class ServerProcessManager: ObservableObject {
     private var process: Process?
     private let configGenerator: RuntimeConfigGenerator
     private let port: Int
+    private let pasteBrokerSocketPath: String?
     private var restartCount = 0
     private let maxRestarts = 3
     private var restartTask: Task<Void, Never>?
     private var isTerminating = false
 
-    init(configGenerator: RuntimeConfigGenerator, port: Int = 8080) {
+    init(configGenerator: RuntimeConfigGenerator, port: Int = 8080, pasteBrokerSocketPath: String? = nil) {
         self.configGenerator = configGenerator
         self.port = port
+        self.pasteBrokerSocketPath = pasteBrokerSocketPath
     }
 
     func start() async {
@@ -130,6 +132,11 @@ final class ServerProcessManager: ObservableObject {
         let process = Process()
         process.executableURL = executableURL
         process.arguments = ["-config", configPath]
+        if let pasteBrokerSocketPath {
+            var environment = ProcessInfo.processInfo.environment
+            environment["TALKA_PASTE_BROKER_SOCKET"] = pasteBrokerSocketPath
+            process.environment = environment
+        }
     let logDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("Talka/logs")
     try? FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
     let logPath = logDir.appendingPathComponent("talka-server.log").path

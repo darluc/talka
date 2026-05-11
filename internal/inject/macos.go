@@ -77,6 +77,10 @@ type PasteDriver interface {
 	Paste(ctx context.Context) error
 }
 
+type PastePreflightDriver interface {
+	Preflight(ctx context.Context) error
+}
+
 type Waiter func(ctx context.Context, delay time.Duration) error
 
 type MacOSPasteOptions struct {
@@ -102,7 +106,7 @@ func NewMacOSPasteInjector(options MacOSPasteOptions) *MacOSPasteInjector {
 	}
 	pasteDriver := options.PasteDriver
 	if pasteDriver == nil {
-		pasteDriver = appleScriptPasteDriver{}
+		pasteDriver = defaultPasteDriver()
 	}
 	waiter := options.Waiter
 	if waiter == nil {
@@ -123,6 +127,12 @@ func NewMacOSPasteInjector(options MacOSPasteOptions) *MacOSPasteInjector {
 }
 
 func (i *MacOSPasteInjector) Insert(ctx context.Context, text string) (Receipt, error) {
+	if preflightDriver, ok := i.pasteDriver.(PastePreflightDriver); ok {
+		if err := preflightDriver.Preflight(ctx); err != nil {
+			return Receipt{}, insertErrorForPasteFailure(err, text)
+		}
+	}
+
 	originalClipboard, err := i.clipboard.Read(ctx)
 	if err != nil {
 		return Receipt{}, &InsertError{
@@ -152,24 +162,7 @@ func (i *MacOSPasteInjector) Insert(ctx context.Context, text string) (Receipt, 
 	}
 
 	if err := i.pasteDriver.Paste(ctx); err != nil {
-		code := FailureCodePasteFailed
-		message := pasteFailureRecoveryMessage
-		action := RecoveryActionCopyFailedText
-		if errors.Is(err, ErrAccessibilityPermissionDenied) {
-			code = FailureCodeAccessibilityMissing
-			message = accessibilityRecoveryMessage
-			action = RecoveryActionOpenAccessibilityGuidance
-		}
-		return Receipt{}, &InsertError{
-			Code:        code,
-			UserMessage: message,
-			Recovery: Recovery{
-				Action:     action,
-				FailedText: text,
-				Volatile:   true,
-			},
-			Err: err,
-		}
+		return Receipt{}, insertErrorForPasteFailure(err, text)
 	}
 
 	receipt := Receipt{Target: macOSPasteTarget, Status: "inserted"}
@@ -202,6 +195,27 @@ func (i *MacOSPasteInjector) Insert(ctx context.Context, text string) (Receipt, 
 
 	receipt.RestoreStatus = RestoreStatusRestored
 	return receipt, nil
+}
+
+func insertErrorForPasteFailure(err error, text string) *InsertError {
+	code := FailureCodePasteFailed
+	message := pasteFailureRecoveryMessage
+	action := RecoveryActionCopyFailedText
+	if errors.Is(err, ErrAccessibilityPermissionDenied) {
+		code = FailureCodeAccessibilityMissing
+		message = accessibilityRecoveryMessage
+		action = RecoveryActionOpenAccessibilityGuidance
+	}
+	return &InsertError{
+		Code:        code,
+		UserMessage: message,
+		Recovery: Recovery{
+			Action:     action,
+			FailedText: text,
+			Volatile:   true,
+		},
+		Err: err,
+	}
 }
 
 type systemClipboard struct{}

@@ -161,6 +161,62 @@ enum ServiceDisplayState: String, Equatable {
     }
 }
 
+enum AccessibilityPermissionStatus: Equatable {
+    case granted
+    case missing
+    case unknown
+
+    var buttonTitle: String {
+        switch self {
+        case .granted:
+            return "Accessibility OK"
+        case .missing:
+            return "Accessibility Required"
+        case .unknown:
+            return "Accessibility Unknown"
+        }
+    }
+
+    var diagnosticLabel: String {
+        switch self {
+        case .granted:
+            return "Granted"
+        case .missing:
+            return "Required"
+        case .unknown:
+            return "Unknown"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .granted:
+            return .green
+        case .missing:
+            return .red
+        case .unknown:
+            return .secondary
+        }
+    }
+}
+
+protocol AccessibilityPermissionChecking {
+    func status() -> AccessibilityPermissionStatus
+    func requestAccess() -> AccessibilityPermissionStatus
+}
+
+struct SystemAccessibilityPermissionChecker: AccessibilityPermissionChecking {
+    func status() -> AccessibilityPermissionStatus {
+        AXIsProcessTrusted() ? .granted : .missing
+    }
+
+    func requestAccess() -> AccessibilityPermissionStatus {
+        let promptKey = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        let options = [promptKey: true] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options) ? .granted : .missing
+    }
+}
+
 struct ControlServiceError: LocalizedError, Equatable {
     var code: String
     var message: String
@@ -773,6 +829,7 @@ final class AppShellViewModel: ObservableObject {
     @Published private(set) var pairing: PairingViewModel?
     @Published private(set) var pairingExpiryText = "--:--"
     @Published private(set) var accessibilityGuidance: AccessibilityGuidance?
+    @Published private(set) var accessibilityStatus: AccessibilityPermissionStatus = .unknown
     @Published private(set) var injectionRecovery: InjectionRecovery?
     @Published private(set) var isBusy = false
     @Published private(set) var lastUpdated: Date?
@@ -780,13 +837,21 @@ final class AppShellViewModel: ObservableObject {
 
     private let client: ControlAPIClient
     private let textCopier: RecoveryTextCopying
+    private let accessibilityChecker: AccessibilityPermissionChecking
     private let nowProvider: () -> Date
     private var hasLoaded = false
 
-    init(client: ControlAPIClient, textCopier: RecoveryTextCopying = SystemRecoveryTextCopier(), nowProvider: @escaping () -> Date = Date.init) {
+    init(
+        client: ControlAPIClient,
+        textCopier: RecoveryTextCopying = SystemRecoveryTextCopier(),
+        accessibilityChecker: AccessibilityPermissionChecking = SystemAccessibilityPermissionChecker(),
+        nowProvider: @escaping () -> Date = Date.init
+    ) {
         self.client = client
         self.textCopier = textCopier
+        self.accessibilityChecker = accessibilityChecker
         self.nowProvider = nowProvider
+        self.accessibilityStatus = accessibilityChecker.status()
     }
 
     var statusMessage: String {
@@ -811,7 +876,11 @@ final class AppShellViewModel: ObservableObject {
         let serviceReady = serviceDisplayState == .listening || serviceDisplayState == .paired
         let asrReady = status?.asr?.ready ?? false
         let aiReady = status?.ollama?.ready ?? false
-        return serviceReady && asrReady && aiReady
+        return serviceReady && asrReady && aiReady && accessibilityStatus == .granted
+    }
+
+    var accessibilityButtonTitle: String {
+        accessibilityStatus.buttonTitle
     }
 
     var pairingStatusText: String {
@@ -852,6 +921,7 @@ final class AppShellViewModel: ObservableObject {
     func refresh() async {
         isBusy = true
         defer { isBusy = false }
+        refreshAccessibilityStatus()
 
         do {
             let fetchedStatus = try await client.fetchStatus()
@@ -877,6 +947,8 @@ final class AppShellViewModel: ObservableObject {
     }
 
     func refreshRuntimeState() async {
+        refreshAccessibilityStatus()
+
         do {
             let fetchedStatus = try await client.fetchStatus()
             async let devices = client.fetchDevices()
@@ -1007,6 +1079,7 @@ final class AppShellViewModel: ObservableObject {
         isBusy = true
         defer { isBusy = false }
 
+        accessibilityStatus = accessibilityChecker.requestAccess()
         do {
             accessibilityGuidance = try await client.openAccessibilitySettings()
             lastUpdated = nowProvider()
@@ -1038,6 +1111,10 @@ final class AppShellViewModel: ObservableObject {
         injectionRecovery = recovery
     }
 
+    private func refreshAccessibilityStatus() {
+        accessibilityStatus = accessibilityChecker.status()
+    }
+
     private static let timestampFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .none
@@ -1067,10 +1144,21 @@ struct TalkaMacApp: App {
     @NSApplicationDelegateAdaptor(TalkaMacLifecycleDelegate.self) private var lifecycleDelegate
     @StateObject private var viewModel: AppShellViewModel
     @StateObject private var serverManager: ServerProcessManager
+    private let pasteBroker: LocalPasteBroker
 
     init() {
-        let sm = ServerProcessManager(configGenerator: EmbeddedRuntimeConfigGenerator())
+        let broker = LocalPasteBroker()
+        let brokerSocketPath: String?
+        do {
+            try broker.start()
+            brokerSocketPath = broker.socketPath
+        } catch {
+            NSLog("Talka paste broker failed to start: \(error.localizedDescription)")
+            brokerSocketPath = nil
+        }
+        let sm = ServerProcessManager(configGenerator: EmbeddedRuntimeConfigGenerator(), pasteBrokerSocketPath: brokerSocketPath)
         let vm = AppShellViewModel(client: LiveControlAPIClient())
+        self.pasteBroker = broker
         _serverManager = StateObject(wrappedValue: sm)
         _viewModel = StateObject(wrappedValue: vm)
 
@@ -1079,6 +1167,7 @@ struct TalkaMacApp: App {
         }
 
         TalkaMacLifecycleDelegate.terminateHandler = {
+            broker.stop()
             sm.terminate()
         }
     }
@@ -1221,12 +1310,12 @@ struct SettingsStatusPINPanel: View {
                     }
                     .buttonStyle(StatusPillButtonStyle(tint: viewModel.serviceDisplayState.tint))
 
-                    Button("Accessibility OK") {
+                    Button(viewModel.accessibilityButtonTitle) {
                         Task {
                             await viewModel.requestAccessibilityGuidance()
                         }
                     }
-                    .buttonStyle(StatusPillButtonStyle(tint: .green))
+                    .buttonStyle(StatusPillButtonStyle(tint: viewModel.accessibilityStatus.tint))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1610,9 +1699,9 @@ struct DiagnosticsView: View {
 
                     DiagnosticStatusCard(
                         title: "Accessibility",
-                        status: viewModel.status?.permissions?.accessibility.capitalized ?? "Unknown",
+                        status: viewModel.accessibilityStatus.diagnosticLabel,
                         detail: "Paste permission path",
-                        tint: viewModel.status?.permissions?.accessibility == "granted" ? .green : .secondary
+                        tint: viewModel.accessibilityStatus.tint
                     )
                 }
 

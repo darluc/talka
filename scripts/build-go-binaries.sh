@@ -84,6 +84,8 @@ for arch in $ARCHS; do
 
   export GOOS="darwin"
   export GOARCH="$goarch"
+  export CGO_ENABLED=1
+  export CC="clang -arch ${arch}"
 
   for binary in $BINARIES; do
     if [ -n "$FOR_BUNDLE" ]; then

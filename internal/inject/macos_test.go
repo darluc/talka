@@ -75,6 +75,31 @@ func TestMacOSPasteInjectorInsertReturnsAccessibilityRecovery(t *testing.T) {
 	}
 }
 
+func TestMacOSPasteInjectorPreflightFailureDoesNotChangeClipboard(t *testing.T) {
+	clipboard := &memoryClipboard{value: []byte("original clipboard")}
+	injector := NewMacOSPasteInjector(MacOSPasteOptions{
+		Clipboard:        clipboard,
+		PasteDriver:      &stubPasteDriver{preflightErr: ErrAccessibilityPermissionDenied},
+		RestoreClipboard: true,
+	})
+
+	_, err := injector.Insert(context.Background(), "Talka 测试文本。")
+	if err == nil {
+		t.Fatal("Insert() error = nil, want accessibility failure")
+	}
+
+	var insertErr *InsertError
+	if !errors.As(err, &insertErr) {
+		t.Fatalf("Insert() error type = %T, want *InsertError", err)
+	}
+	if got, want := insertErr.Code, FailureCodeAccessibilityMissing; got != want {
+		t.Fatalf("Code = %q, want %q", got, want)
+	}
+	if got, want := string(clipboard.value), "original clipboard"; got != want {
+		t.Fatalf("clipboard = %q, want %q", got, want)
+	}
+}
+
 func TestMacOSPasteInjectorInsertReturnsPasteFailureRecovery(t *testing.T) {
 	clipboard := &memoryClipboard{value: []byte("original clipboard")}
 	injector := NewMacOSPasteInjector(MacOSPasteOptions{
@@ -175,8 +200,13 @@ func (m *memoryClipboard) Write(_ context.Context, value []byte) error {
 }
 
 type stubPasteDriver struct {
-	calls int
-	err   error
+	calls        int
+	err          error
+	preflightErr error
+}
+
+func (s *stubPasteDriver) Preflight(context.Context) error {
+	return s.preflightErr
 }
 
 func (s *stubPasteDriver) Paste(context.Context) error {

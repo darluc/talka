@@ -60,6 +60,34 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertNil(viewModel.recoveryActionTitle)
     }
 
+    func testRefreshUsesNativeAccessibilityStatus() async {
+        let checker = FakeAccessibilityPermissionChecker(statuses: [.missing])
+        let viewModel = AppShellViewModel(
+            client: FakeControlAPIClient(
+                statusResults: [.success(.fixture(permissions: ControlPermissionsStatus(accessibility: "unknown")))]
+            ),
+            accessibilityChecker: checker
+        )
+
+        await viewModel.refresh()
+
+        XCTAssertEqual(viewModel.accessibilityStatus, .missing)
+        XCTAssertEqual(viewModel.accessibilityButtonTitle, "Accessibility Required")
+        XCTAssertFalse(viewModel.isEverythingHealthy)
+    }
+
+    func testRequestAccessibilityGuidancePromptsThroughNativeChecker() async {
+        let checker = FakeAccessibilityPermissionChecker(statuses: [.missing], requestStatus: .granted)
+        let client = FakeControlAPIClient()
+        let viewModel = AppShellViewModel(client: client, accessibilityChecker: checker)
+
+        await viewModel.requestAccessibilityGuidance()
+
+        XCTAssertEqual(checker.requestAccessCalls, 1)
+        XCTAssertEqual(client.accessibilityOpenCalls, 1)
+        XCTAssertEqual(viewModel.accessibilityStatus, .granted)
+    }
+
     func testRefreshMapsAccessibilityRecoveryFromControlError() async {
         let client = FakeControlAPIClient(
             statusResults: [
@@ -226,7 +254,10 @@ final class TalkaMacTests: XCTestCase {
             devicesResults: [.success([]), .success([])],
             configResults: [.success(.fixture())]
         )
-        let viewModel = AppShellViewModel(client: client)
+        let viewModel = AppShellViewModel(
+            client: client,
+            accessibilityChecker: FakeAccessibilityPermissionChecker(statuses: [.granted, .granted, .granted])
+        )
 
         await viewModel.refresh()
         XCTAssertTrue(viewModel.isEverythingHealthy)
@@ -978,6 +1009,26 @@ private final class FakeRecoveryTextCopier: RecoveryTextCopying {
 
     func copy(_ text: String) {
         copiedText = text
+    }
+}
+
+private final class FakeAccessibilityPermissionChecker: AccessibilityPermissionChecking {
+    private var statuses: [AccessibilityPermissionStatus]
+    private let requestStatus: AccessibilityPermissionStatus
+    private(set) var requestAccessCalls = 0
+
+    init(statuses: [AccessibilityPermissionStatus], requestStatus: AccessibilityPermissionStatus = .missing) {
+        self.statuses = statuses
+        self.requestStatus = requestStatus
+    }
+
+    func status() -> AccessibilityPermissionStatus {
+        statuses.isEmpty ? requestStatus : statuses.removeFirst()
+    }
+
+    func requestAccess() -> AccessibilityPermissionStatus {
+        requestAccessCalls += 1
+        return requestStatus
     }
 }
 

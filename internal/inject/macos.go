@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -222,6 +223,7 @@ type systemClipboard struct{}
 
 func (systemClipboard) Read(ctx context.Context) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "pbpaste")
+	forceUTF8Locale(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("pbpaste: %w", err)
@@ -231,11 +233,29 @@ func (systemClipboard) Read(ctx context.Context) ([]byte, error) {
 
 func (systemClipboard) Write(ctx context.Context, value []byte) error {
 	cmd := exec.CommandContext(ctx, "pbcopy")
+	forceUTF8Locale(cmd)
 	cmd.Stdin = bytes.NewReader(value)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("pbcopy: %w", err)
 	}
 	return nil
+}
+
+func forceUTF8Locale(cmd *exec.Cmd) {
+	cmd.Env = appendLocale(os.Environ(), "LANG", "en_US.UTF-8")
+	cmd.Env = appendLocale(cmd.Env, "LC_CTYPE", "en_US.UTF-8")
+}
+
+func appendLocale(env []string, key, value string) []string {
+	prefix := key + "="
+	filtered := env[:0]
+	for _, item := range env {
+		if strings.HasPrefix(item, prefix) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	return append(filtered, prefix+value)
 }
 
 type appleScriptPasteDriver struct{}

@@ -1933,46 +1933,6 @@ struct DiagnosticsView: View {
                     }
                 }
 
-                DiagnosticSection(title: "Recovery") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Button("Refresh") {
-                                Task {
-                                    await viewModel.refresh()
-                                }
-                            }
-
-                            Button("Open Accessibility Settings") {
-                                Task {
-                                    await viewModel.requestAccessibilityGuidance()
-                                }
-                            }
-
-                            if let title = viewModel.recoveryActionTitle {
-                                Button(title) {
-                                    Task {
-                                        await viewModel.performRecoveryAction()
-                                    }
-                                }
-                            }
-
-                            Spacer()
-
-                            if viewModel.isBusy {
-                                ProgressView()
-                                    .controlSize(.small)
-                            }
-                        }
-
-                        if let guidance = viewModel.accessibilityGuidance {
-                            AccessibilityGuidanceView(guidance: guidance)
-                        }
-
-                        if let recovery = viewModel.injectionRecovery {
-                            RecoveryStateView(recovery: recovery)
-                        }
-                    }
-                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(ShellMetrics.contentPadding)

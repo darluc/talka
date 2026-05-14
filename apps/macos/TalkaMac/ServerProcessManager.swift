@@ -10,6 +10,7 @@ protocol RuntimeConfigGenerator {
 final class ServerProcessManager: ObservableObject {
     enum PortReuseAction: Equatable {
         case reuseExistingServer
+        case replaceExistingServer
     }
 
     @Published var isRunning = false
@@ -40,6 +41,10 @@ final class ServerProcessManager: ObservableObject {
             return
         }
 
+        startManagedServer()
+    }
+
+    private func startManagedServer() {
         let configURL: URL
         do {
             configURL = try configGenerator.generateConfig()
@@ -75,7 +80,8 @@ final class ServerProcessManager: ObservableObject {
 
         guard let action = Self.portReuseAction(
             data: data,
-            response: httpResponse
+            response: httpResponse,
+            currentPasteBrokerSocketPath: pasteBrokerSocketPath
         ) else {
             lastError = "Port \(port) is in use by another application"
             return
@@ -84,6 +90,14 @@ final class ServerProcessManager: ObservableObject {
         switch action {
         case .reuseExistingServer:
             isRunning = true
+        case .replaceExistingServer:
+            terminateProcessListening(on: port)
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !isPortInUse(port: port) else {
+                lastError = "Port \(port) is in use by a stale Talka service"
+                return
+            }
+            startManagedServer()
         }
     }
 
@@ -211,13 +225,44 @@ final class ServerProcessManager: ObservableObject {
         return result == 0
     }
 
-    static func portReuseAction(data: Data, response: URLResponse) -> PortReuseAction? {
+    private func terminateProcessListening(on port: Int) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-ti", "tcp:\(port)", "-sTCP:LISTEN"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return
+        }
+
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8) else { return }
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let pid = Int32(String(line).trimmingCharacters(in: .whitespacesAndNewlines)) else { continue }
+            kill(pid, SIGTERM)
+        }
+    }
+
+    static func portReuseAction(data: Data, response: URLResponse, currentPasteBrokerSocketPath: String? = nil) -> PortReuseAction? {
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let serviceName = json["service_name"] as? String,
               serviceName == "Talka" else {
             return nil
+        }
+
+        if let currentPasteBrokerSocketPath {
+            let injection = json["injection"] as? [String: Any]
+            let existingPasteBrokerSocketPath = injection?["paste_broker_socket"] as? String
+            guard existingPasteBrokerSocketPath == currentPasteBrokerSocketPath else {
+                return .replaceExistingServer
+            }
         }
 
         return .reuseExistingServer

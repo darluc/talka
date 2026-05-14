@@ -13,6 +13,8 @@ import (
 	"talka/internal/protocol"
 )
 
+var buildPipelineFromConfig = newPipelineFromConfig
+
 func newPipelineFromConfig(cfg config.Config, configDir string) (*Pipeline, error) {
 	asrProvider, err := newASRProviderFromConfig(cfg.ASR, configDir)
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -73,6 +74,7 @@ type StatusResponse struct {
 	PairingActive bool                      `json:"pairing_active"`
 	ASR           ASRStatusResponse         `json:"asr"`
 	Ollama        OllamaStatusResponse      `json:"ollama"`
+	Injection     InjectionStatusResponse   `json:"injection"`
 	Permissions   PermissionsStatusResponse `json:"permissions"`
 }
 
@@ -95,6 +97,12 @@ type OllamaStatusResponse struct {
 
 type PermissionsStatusResponse struct {
 	Accessibility string `json:"accessibility"`
+}
+
+type InjectionStatusResponse struct {
+	Mode              string `json:"mode"`
+	RestoreClipboard  bool   `json:"restore_clipboard"`
+	PasteBrokerSocket string `json:"paste_broker_socket,omitempty"`
 }
 
 type DevicesResponse struct {
@@ -362,6 +370,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		PairingActive: a.pairing != nil && time.Now().Before(a.pairing.ExpiresAt),
 		ASR:           ASRStatusResponse{Provider: a.cfg.ASR.Provider, RuntimePath: a.cfg.ASR.RuntimePath, SampleRate: a.cfg.ASR.SampleRate, Mode: a.cfg.ASR.Mode, Ready: a.asrStatus.Ready, Error: a.asrStatus.Error},
 		Ollama:        OllamaStatusResponse{BaseURL: a.cfg.LLM.BaseURL, Model: a.cfg.LLM.Model, TimeoutSeconds: a.cfg.LLM.TimeoutSeconds, Ready: a.ollamaStatus.Ready, Error: a.ollamaStatus.Error},
+		Injection:     InjectionStatusResponse{Mode: a.cfg.Injection.Mode, RestoreClipboard: a.cfg.Injection.RestoreClipboard, PasteBrokerSocket: os.Getenv("TALKA_PASTE_BROKER_SOCKET")},
 		Permissions:   PermissionsStatusResponse{Accessibility: "unknown"},
 	})
 }
@@ -450,14 +459,29 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 			writeConfigError(w, err)
 			return
 		}
+		pipeline, err := buildPipelineFromConfig(updated, a.configDir)
+		if err != nil {
+			a.logger.Error("failed to rebuild pipeline from config", "error", err)
+			writeError(w, http.StatusBadRequest, "invalid_config", "configuration cannot initialize the audio pipeline", map[string]any{"diagnostic": err.Error()})
+			return
+		}
 		if err := config.Save(a.configPath, updated); err != nil {
 			a.logger.Error("failed to write config", "error", err)
 			writeError(w, http.StatusInternalServerError, "config_write_failed", "failed to write config", nil)
 			return
 		}
 		a.mu.Lock()
+		previousPipeline := a.pipeline
 		a.cfg = updated
+		a.pipeline = pipeline
 		a.mu.Unlock()
+		if previousPipeline != nil && previousPipeline != pipeline {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := previousPipeline.Shutdown(shutdownCtx); err != nil {
+				a.logger.Warn("failed to shut down previous pipeline after config update", "error", err)
+			}
+		}
 		a.logger.Info("config updated", "config_path", a.configPath, "logging_level", updated.Logging.Level)
 		writeJSON(w, http.StatusOK, ConfigResponse{Path: a.configPath, Config: updated})
 	default:

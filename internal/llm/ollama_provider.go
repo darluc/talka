@@ -44,6 +44,7 @@ type ollamaChatRequest struct {
 	Model    string              `json:"model"`
 	Messages []ollamaChatMessage `json:"messages"`
 	Stream   bool                `json:"stream"`
+	Think    bool                `json:"think"`
 }
 
 type ollamaChatMessage struct {
@@ -107,6 +108,7 @@ func (p *OllamaProvider) CleanupStrict(ctx context.Context, transcript string) (
 		Model:    p.model,
 		Messages: promptForCleanup(cleanupModeFinal, raw),
 		Stream:   false,
+		Think:    false,
 	}
 	cleaned, err := p.chat(ctx, requestBody)
 	if err != nil {

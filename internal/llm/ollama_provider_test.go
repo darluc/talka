@@ -33,9 +33,21 @@ func TestOllamaProviderUsesStrictChatCleanupContract(t *testing.T) {
 			t.Fatalf("path = %s, want /api/chat", r.URL.Path)
 		}
 
-		var req ollamaChatRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		var requestBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
 			t.Fatalf("Decode() error = %v", err)
+		}
+		if think, ok := requestBody["think"].(bool); !ok || think {
+			t.Fatalf("think = %#v, want false", requestBody["think"])
+		}
+
+		body, err := json.Marshal(requestBody)
+		if err != nil {
+			t.Fatalf("Marshal() error = %v", err)
+		}
+		var req ollamaChatRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatalf("Unmarshal() error = %v", err)
 		}
 
 		if req.Model != "qwen3:8b" {

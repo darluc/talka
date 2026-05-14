@@ -3,6 +3,9 @@ package inject
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -174,6 +177,49 @@ func TestMacOSPasteInjectorInsertSkipsRestoreWhenUserChangesClipboard(t *testing
 	}
 	if got, want := string(clipboard.value), "user changed clipboard"; got != want {
 		t.Fatalf("clipboard = %q, want %q", got, want)
+	}
+}
+
+func TestSystemClipboardWriteForcesUTF8LocaleForPBcopy(t *testing.T) {
+	tempDir := t.TempDir()
+	envPath := filepath.Join(tempDir, "pbcopy.env")
+	stdinPath := filepath.Join(tempDir, "pbcopy.stdin")
+	pbcopyPath := filepath.Join(tempDir, "pbcopy")
+	script := "#!/bin/sh\n" +
+		"printf 'LANG=%s\\nLC_CTYPE=%s\\n' \"$LANG\" \"$LC_CTYPE\" > \"$PBCOPY_ENV_PATH\"\n" +
+		"/bin/cat > \"$PBCOPY_STDIN_PATH\"\n"
+	if err := os.WriteFile(pbcopyPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile(pbcopy) error = %v", err)
+	}
+	t.Setenv("PATH", tempDir)
+	t.Setenv("PBCOPY_ENV_PATH", envPath)
+	t.Setenv("PBCOPY_STDIN_PATH", stdinPath)
+	t.Setenv("LANG", "C")
+	t.Setenv("LC_CTYPE", "C")
+
+	text := "从前有座山，山上有座庙，庙里有个老和尚。"
+	if err := (systemClipboard{}).Write(context.Background(), []byte(text)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	envBytes, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("ReadFile(env) error = %v", err)
+	}
+	env := string(envBytes)
+	if !strings.Contains(env, "LANG=en_US.UTF-8\n") {
+		t.Fatalf("pbcopy LANG env = %q, want en_US.UTF-8", env)
+	}
+	if !strings.Contains(env, "LC_CTYPE=en_US.UTF-8\n") {
+		t.Fatalf("pbcopy LC_CTYPE env = %q, want en_US.UTF-8", env)
+	}
+
+	stdinBytes, err := os.ReadFile(stdinPath)
+	if err != nil {
+		t.Fatalf("ReadFile(stdin) error = %v", err)
+	}
+	if got := string(stdinBytes); got != text {
+		t.Fatalf("pbcopy stdin = %q, want %q", got, text)
 	}
 }
 

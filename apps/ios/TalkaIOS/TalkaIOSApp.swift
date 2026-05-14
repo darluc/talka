@@ -2095,7 +2095,7 @@ struct AudioBreathingRingMetrics {
     static let minimumIntensity: Double = 0
     static let maximumIntensity: Double = 1
     static let baseRadiusExpansion: Double = 0
-    static let maximumAudioRadiusExpansion: Double = 15
+    static let maximumAudioRadiusExpansion: Double = 50
 
     static func intensity(for audioLevel: Double) -> Double {
         min(max(audioLevel, minimumIntensity), maximumIntensity)

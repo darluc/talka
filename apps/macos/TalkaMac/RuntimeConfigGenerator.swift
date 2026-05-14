@@ -29,10 +29,11 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
 		let funasrBinaryURL = resourcesURL.appendingPathComponent("funasr-wss-server-2pass")
 		let modelsURL = resourcesURL.appendingPathComponent("models/funasr")
 		let hotwordsPath = hotwordsPath(resourcesURL: resourcesURL)
-		let originalYAML = yaml
+			let originalYAML = yaml
 
-		yaml = removeMalformedEmbeddedResourceLines(from: yaml)
-		yaml = ensureEmbeddedASRProvider(in: yaml)
+			yaml = removeMalformedEmbeddedResourceLines(from: yaml)
+			yaml = removeDuplicatedEmbeddedASRProvider(from: yaml)
+			yaml = ensureEmbeddedASRProvider(in: yaml)
 		yaml = replaceYAMLValue(named: "runtime_path", indent: "  ", with: runtimeURL.path, in: yaml)
 		yaml = replaceYAMLValue(named: "funasr_binary_path", indent: "  ", with: funasrBinaryURL.path, in: yaml)
 		yaml = replaceYAMLValue(named: "hotword_path", indent: "  ", with: hotwordsPath, in: yaml)
@@ -63,8 +64,16 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
         )
     }
 
+    private func removeDuplicatedEmbeddedASRProvider(from yaml: String) -> String {
+        yaml.replacingOccurrences(
+            of: #"(?m)^  provider: funasr_embedded\n(?=    provider: funasr_embedded$)"#,
+            with: "",
+            options: .regularExpression
+        )
+    }
+
     private func ensureEmbeddedASRProvider(in yaml: String) -> String {
-        if yaml.range(of: #"(?m)^asr:\n  provider:"#, options: .regularExpression) != nil {
+        if yaml.range(of: #"(?m)^asr:\n[ \t]+provider:"#, options: .regularExpression) != nil {
             return yaml
         }
 
@@ -76,8 +85,10 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
     }
 
     private func replaceYAMLValue(named key: String, indent: String, with value: String, in yaml: String) -> String {
-        yaml.replacingOccurrences(
-            of: #"(?m)^(\#(indent)\#(key):\s*).*$"#,
+        let escapedKey = NSRegularExpression.escapedPattern(for: key)
+        let indentPattern = #"[ \t]{\#(indent.count),}"#
+        return yaml.replacingOccurrences(
+            of: #"(?m)^(\#(indentPattern)\#(escapedKey):\s*).*$"#,
             with: "$1\(value)",
             options: .regularExpression
         )

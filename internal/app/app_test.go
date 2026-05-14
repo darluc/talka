@@ -33,6 +33,7 @@ import (
 )
 
 func TestStatusEndpointReturnsTypedJSON(t *testing.T) {
+	t.Setenv("TALKA_PASTE_BROKER_SOCKET", "/tmp/talka-test-broker.sock")
 	server := newHealthyTestServer(t)
 
 	resp := mustGet(t, server.URL+"/v1/status")
@@ -68,6 +69,12 @@ func TestStatusEndpointReturnsTypedJSON(t *testing.T) {
 	}
 	if payload.Permissions.Accessibility != "unknown" {
 		t.Fatalf("Accessibility permission = %q, want unknown", payload.Permissions.Accessibility)
+	}
+	if payload.Injection.Mode != "clipboard_paste" {
+		t.Fatalf("Injection.Mode = %q, want clipboard_paste", payload.Injection.Mode)
+	}
+	if payload.Injection.PasteBrokerSocket != "/tmp/talka-test-broker.sock" {
+		t.Fatalf("Injection.PasteBrokerSocket = %q, want env socket", payload.Injection.PasteBrokerSocket)
 	}
 }
 
@@ -487,6 +494,53 @@ func TestIOSWebSocketErrorCodePropagatesInjectionFailures(t *testing.T) {
 	}
 	if got.Message != "Talka needs Accessibility or Automation permission before it can paste into other apps." {
 		t.Fatalf("Message = %q, want propagated insert error message", got.Message)
+	}
+}
+
+func TestConfigPutRebuildsPipelineWithUpdatedConfig(t *testing.T) {
+	cfg, cfgPath := mustConfig(t)
+	oldPipeline := NewPipeline(newShutdownProbeASR(), newHealthProbeLLM(nil), inject.NewFakeInjector())
+	service, err := NewWithPipeline(cfg, cfgPath, nil, oldPipeline)
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
+	}
+	server := httptest.NewServer(service.Handler())
+	defer server.Close()
+
+	updated := cfg
+	updated.LLM.Model = "qwen3.5:4b"
+	newPipeline := NewPipeline(newHealthProbeASR(nil), newHealthProbeLLM(nil), inject.NewFakeInjector())
+	var builtModel string
+	previousBuilder := buildPipelineFromConfig
+	buildPipelineFromConfig = func(cfg config.Config, configDir string) (*Pipeline, error) {
+		builtModel = cfg.LLM.Model
+		return newPipeline, nil
+	}
+	t.Cleanup(func() { buildPipelineFromConfig = previousBuilder })
+
+	body, err := json.Marshal(updated)
+	if err != nil {
+		t.Fatalf("Marshal(updated) error = %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/v1/config", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT /v1/config error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("PUT /v1/config status = %d body = %s", resp.StatusCode, payload)
+	}
+
+	if builtModel != "qwen3.5:4b" {
+		t.Fatalf("rebuilt pipeline model = %q, want qwen3.5:4b", builtModel)
+	}
+	if service.pipeline != newPipeline {
+		t.Fatal("service pipeline was not replaced after config update")
 	}
 }
 

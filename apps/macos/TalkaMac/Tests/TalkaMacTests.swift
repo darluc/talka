@@ -637,7 +637,7 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertNil(logging["captureTranscript"])
     }
 
-    func testPortReuseActionStartsProxyWhenExistingTalkaServerHasNoProxy() throws {
+    func testPortReuseActionReplacesExistingTalkaServerWhenPasteBrokerIsMissing() throws {
         let response = try Self.httpResponse(
             url: URL(string: "http://127.0.0.1:8080/v1/status")!,
             body: #"{"service_name":"Talka","state":"running"}"#
@@ -646,23 +646,42 @@ final class TalkaMacTests: XCTestCase {
         let action = try XCTUnwrap(
             ServerProcessManager.portReuseAction(
                 data: response.1,
-                response: response.0
+                response: response.0,
+                currentPasteBrokerSocketPath: "/tmp/talka-paste-current.sock"
             )
         )
 
-        XCTAssertEqual(action, .reuseExistingServer)
+        XCTAssertEqual(action, .replaceExistingServer)
     }
 
-    func testPortReuseActionSkipsProxyWhenExistingTalkaServerAlreadyHasProxy() throws {
+    func testPortReuseActionReplacesExistingTalkaServerWhenPasteBrokerDiffers() throws {
         let response = try Self.httpResponse(
             url: URL(string: "http://127.0.0.1:8080/v1/status")!,
-            body: #"{"service_name":"Talka","state":"running"}"#
+            body: #"{"service_name":"Talka","state":"running","injection":{"paste_broker_socket":"/tmp/talka-paste-old.sock"}}"#
         )
 
         let action = try XCTUnwrap(
             ServerProcessManager.portReuseAction(
                 data: response.1,
-                response: response.0
+                response: response.0,
+                currentPasteBrokerSocketPath: "/tmp/talka-paste-current.sock"
+            )
+        )
+
+        XCTAssertEqual(action, .replaceExistingServer)
+    }
+
+    func testPortReuseActionReusesExistingTalkaServerWhenPasteBrokerMatches() throws {
+        let response = try Self.httpResponse(
+            url: URL(string: "http://127.0.0.1:8080/v1/status")!,
+            body: #"{"service_name":"Talka","state":"running","injection":{"paste_broker_socket":"/tmp/talka-paste-current.sock"}}"#
+        )
+
+        let action = try XCTUnwrap(
+            ServerProcessManager.portReuseAction(
+                data: response.1,
+                response: response.0,
+                currentPasteBrokerSocketPath: "/tmp/talka-paste-current.sock"
             )
         )
 
@@ -761,6 +780,22 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertFalse(contents.contains("provider: funasr_embedded"))
     }
 
+    func testDiagnosticsViewDoesNotRenderRecoverySection() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("TalkaMacApp.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        guard let diagnosticsRange = source.range(of: "struct DiagnosticsView: View"),
+              let headerRange = source.range(of: "struct DiagnosticHeaderCard: View") else {
+            XCTFail("Could not locate DiagnosticsView source boundaries.")
+            return
+        }
+
+        let diagnosticsSource = source[diagnosticsRange.lowerBound..<headerRange.lowerBound]
+        XCTAssertFalse(diagnosticsSource.contains(#"DiagnosticSection(title: "Recovery")"#))
+    }
+
     func testRuntimeConfigGeneratorRefreshesStaleEmbeddedResourcePaths() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let resourcesDir = tempDir.appendingPathComponent("resources", isDirectory: true)
@@ -821,6 +856,110 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertTrue(contents.contains("    asr: \(modelsDir.appendingPathComponent("paraformer-zh-onnx").path)"))
         XCTAssertTrue(contents.contains("model: custom-model"))
         XCTAssertFalse(contents.contains("/Applications/TalkaMac.app/Contents/Resources"))
+    }
+
+    func testRuntimeConfigGeneratorDoesNotDuplicateProviderInSavedFourSpaceConfig() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let resourcesDir = tempDir.appendingPathComponent("resources", isDirectory: true)
+        let modelsDir = resourcesDir.appendingPathComponent("models/funasr", isDirectory: true)
+        let configURL = tempDir.appendingPathComponent("config.yaml")
+        try FileManager.default.createDirectory(at: modelsDir, withIntermediateDirectories: true)
+        setenv("TALKA_CONFIG_PATH", configURL.path, 1)
+        setenv("TALKA_RESOURCES_PATH", resourcesDir.path, 1)
+
+        let savedConfig = """
+        server:
+            bind_host: 0.0.0.0
+            port: 8080
+            service_name: Talka
+        asr:
+            provider: funasr_embedded
+            runtime_path: /Applications/TalkaMac.app/Contents/Resources/talka-asr-runtime
+            funasr_binary_path: ""
+            host: 127.0.0.1
+            port: 10095
+            mode: 2pass
+            sample_rate: 16000
+            startup_timeout_seconds: 180
+            container_image: ""
+            container_name: ""
+            download_dir: ""
+            hotword_path: /Applications/TalkaMac.app/Contents/Resources/hotwords.txt
+            models:
+                asr: /Applications/TalkaMac.app/Contents/Resources/models/funasr/paraformer-zh-onnx
+                online: /Applications/TalkaMac.app/Contents/Resources/models/funasr/paraformer-zh-online-onnx
+                vad: /Applications/TalkaMac.app/Contents/Resources/models/funasr/fsmn-vad-onnx
+                punc: /Applications/TalkaMac.app/Contents/Resources/models/funasr/ct-punc-onnx
+                itn: /Applications/TalkaMac.app/Contents/Resources/models/funasr/itn-zh
+                lm: ""
+        llm:
+            provider: ollama
+            base_url: http://localhost:11434
+            model: custom-model
+            timeout_seconds: 30
+        injection:
+            mode: clipboard_paste
+            restore_clipboard: true
+        logging:
+            level: info
+            capture_audio: false
+            capture_transcript: false
+        """
+        try savedConfig.write(to: configURL, atomically: true, encoding: .utf8)
+
+        _ = try EmbeddedRuntimeConfigGenerator().generateConfig()
+
+        let contents = try String(contentsOf: configURL, encoding: .utf8)
+        XCTAssertFalse(contents.contains("asr:\n  provider: funasr_embedded\n    provider: funasr_embedded"))
+        XCTAssertEqual(contents.components(separatedBy: "provider: funasr_embedded").count - 1, 1)
+        XCTAssertTrue(contents.contains("runtime_path: \(resourcesDir.appendingPathComponent("talka-asr-runtime").path)"))
+        XCTAssertTrue(contents.contains("model: custom-model"))
+    }
+
+    func testRuntimeConfigGeneratorRepairsDuplicatedProviderFromPreviousRefreshBug() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let resourcesDir = tempDir.appendingPathComponent("resources", isDirectory: true)
+        let configURL = tempDir.appendingPathComponent("config.yaml")
+        try FileManager.default.createDirectory(at: resourcesDir.appendingPathComponent("models/funasr", isDirectory: true), withIntermediateDirectories: true)
+        setenv("TALKA_CONFIG_PATH", configURL.path, 1)
+        setenv("TALKA_RESOURCES_PATH", resourcesDir.path, 1)
+
+        let brokenConfig = """
+        server:
+            bind_host: 0.0.0.0
+            port: 8080
+            service_name: Talka
+        asr:
+          provider: funasr_embedded
+            provider: funasr_embedded
+            runtime_path: /Applications/TalkaMac.app/Contents/Resources/talka-asr-runtime
+            host: 127.0.0.1
+            port: 10095
+            mode: 2pass
+            sample_rate: 16000
+            startup_timeout_seconds: 180
+            hotword_path: /Applications/TalkaMac.app/Contents/Resources/hotwords.txt
+            models:
+                asr: /Applications/TalkaMac.app/Contents/Resources/models/funasr/paraformer-zh-onnx
+        llm:
+            provider: ollama
+            base_url: http://localhost:11434
+            model: custom-model
+            timeout_seconds: 30
+        injection:
+            mode: clipboard_paste
+            restore_clipboard: true
+        logging:
+            level: info
+        """
+        try brokenConfig.write(to: configURL, atomically: true, encoding: .utf8)
+
+        _ = try EmbeddedRuntimeConfigGenerator().generateConfig()
+
+        let contents = try String(contentsOf: configURL, encoding: .utf8)
+        XCTAssertFalse(contents.contains("asr:\n  provider: funasr_embedded\n    provider: funasr_embedded"))
+        XCTAssertEqual(contents.components(separatedBy: "provider: funasr_embedded").count - 1, 1)
+        XCTAssertTrue(contents.contains("runtime_path: \(resourcesDir.appendingPathComponent("talka-asr-runtime").path)"))
     }
 
     func testRuntimeConfigGeneratorRepairsMalformedEmbeddedResourcePathLine() throws {

@@ -53,6 +53,20 @@ printf 'Output dir: %s\n' "$OUTPUT_DIR"
 printf 'Binaries: %s\n' "$BINARIES"
 
 ARCHS="${ARCHS:-arm64}"
+GO_TAGS="${GO_TAGS:-}"
+if [ -d "./third_party/sherpa-onnx/include" ] && [ -d "./third_party/sherpa-onnx/lib" ]; then
+  case " $GO_TAGS " in
+    *" sherpa_onnx "*) ;;
+    *) GO_TAGS="${GO_TAGS:+$GO_TAGS }sherpa_onnx" ;;
+  esac
+fi
+if [ -n "$GO_TAGS" ]; then
+  printf 'Go build tags: %s\n' "$GO_TAGS"
+  export CGO_LDFLAGS_ALLOW="${CGO_LDFLAGS_ALLOW:-(-Wl,-rpath,.*|-L.*|-l.*)}"
+  if printf '%s\n' "$GO_TAGS" | grep -q 'sherpa_onnx'; then
+    export CGO_LDFLAGS="${CGO_LDFLAGS:-} -Wl,-rpath,@executable_path/../Frameworks -Wl,-rpath,$(pwd)/third_party/sherpa-onnx/lib"
+  fi
+fi
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -94,7 +108,11 @@ for arch in $ARCHS; do
       output="${OUTPUT_DIR}/${binary}_darwin_${goarch}"
     fi
     printf '  building %s (%s)...\n' "$binary" "darwin/${goarch}"
-    go build -trimpath -ldflags="-s -w" -o "$output" "./cmd/${binary}/"
+    if [ -n "$GO_TAGS" ]; then
+      go build -tags "$GO_TAGS" -trimpath -ldflags="-s -w" -o "$output" "./cmd/${binary}/"
+    else
+      go build -trimpath -ldflags="-s -w" -o "$output" "./cmd/${binary}/"
+    fi
     chmod +x "$output"
     printf '    -> %s\n' "$output"
   done

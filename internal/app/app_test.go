@@ -757,6 +757,63 @@ func TestIOSAudioWebSocketReturnsJSONBeforeCloseFrame(t *testing.T) {
 	}
 }
 
+func TestIOSAudioWebSocketStreamsFramesBeforeAudioStop(t *testing.T) {
+	cfg, cfgPath := mustConfig(t)
+	probe := newStreamingProbeASR(asr.Result{Transcript: "你好，世界"})
+	service, err := NewWithPipeline(cfg, cfgPath, nil, NewPipeline(
+		probe,
+		llm.NewFakeProvider(llm.FakeConfig{}),
+		inject.NewFakeInjector(),
+	))
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
+	}
+	server := httptest.NewServer(service.Handler())
+	defer server.Close()
+
+	start, challenge, paired, clientIdentity, clientEphemeral := pairHTTPClientWithKeys(t, server.URL)
+	clientSession := mustAppClientSession(t, intcrypto.FlowPairing, challenge.PairingID, paired, clientIdentity, clientEphemeral, start.PIN)
+	messages := encryptTestAudioMessages(t, clientSession, paired.SessionID)
+
+	conn, reader := mustOpenIOSAudioWebSocket(t, server.URL, "iphone-1")
+	defer conn.Close()
+	for _, message := range messages[:2] {
+		if err := writeMaskedWebSocketFrame(conn, 0x1, marshalIOSAudioWireMessage(t, message)); err != nil {
+			t.Fatalf("writeMaskedWebSocketFrame() error = %v", err)
+		}
+	}
+
+	select {
+	case frame := <-probe.accepted:
+		if !bytes.Equal(frame, bytes.Repeat([]byte{1}, asr.DefaultFrameSize)) {
+			t.Fatalf("streamed frame = %q, want first frame before stop", frame)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("ASR AcceptFrame was not called before audio_stop")
+	}
+
+	for _, message := range messages[2:] {
+		if err := writeMaskedWebSocketFrame(conn, 0x1, marshalIOSAudioWireMessage(t, message)); err != nil {
+			t.Fatalf("writeMaskedWebSocketFrame() error = %v", err)
+		}
+	}
+
+	responsePayload, opcode, err := readServerWebSocketFrame(reader)
+	if err != nil {
+		t.Fatalf("readServerWebSocketFrame(response) error = %v", err)
+	}
+	if opcode != 0x1 {
+		t.Fatalf("response opcode = %#x, want text frame", opcode)
+	}
+	var response iosAudioWebSocketResponse
+	if err := json.Unmarshal(responsePayload, &response); err != nil {
+		t.Fatalf("Unmarshal(response) error = %v", err)
+	}
+	if !response.OK {
+		t.Fatalf("response.OK = false, want true; response = %+v", response)
+	}
+}
+
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	useFakeIOSPairingStore(t)
@@ -1314,6 +1371,40 @@ func (p *healthProbeASR) EnsureReady(context.Context) error {
 
 func (p *healthProbeASR) Transcribe(context.Context, asr.Request) (asr.Result, error) {
 	return asr.Result{Transcript: "你好，世界"}, nil
+}
+
+type streamingProbeASR struct {
+	result   asr.Result
+	accepted chan []byte
+}
+
+func newStreamingProbeASR(result asr.Result) *streamingProbeASR {
+	return &streamingProbeASR{result: result, accepted: make(chan []byte, 10)}
+}
+
+func (p *streamingProbeASR) Transcribe(context.Context, asr.Request) (asr.Result, error) {
+	return p.result, nil
+}
+
+func (p *streamingProbeASR) NewStream(context.Context, protocol.AudioMetadata) (asr.StreamingSession, error) {
+	return &streamingProbeSession{provider: p}, nil
+}
+
+type streamingProbeSession struct {
+	provider *streamingProbeASR
+}
+
+func (s *streamingProbeSession) AcceptFrame(_ context.Context, frame []byte) (asr.Result, error) {
+	s.provider.accepted <- append([]byte(nil), frame...)
+	return asr.Result{}, nil
+}
+
+func (s *streamingProbeSession) Finish(context.Context) (asr.Result, error) {
+	return s.provider.result, nil
+}
+
+func (s *streamingProbeSession) Close(context.Context) error {
+	return nil
 }
 
 type healthProbeLLM struct {

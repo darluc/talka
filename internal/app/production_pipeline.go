@@ -36,6 +36,22 @@ func newASRProviderFromConfig(cfg config.ASRConfig, configDir string) (ASRProvid
 	if provider == "sidecar" {
 		return asr.NewSidecarProvider(asr.Config{URL: asrWebsocketURL(cfg.Host, cfg.Port), Version: protocol.VersionV1Alpha1}), nil
 	}
+	if provider == "sherpa_onnx_streaming" {
+		encoderPath := sherpaONNXModelPathForPrecision(cfg.SherpaONNX.ModelType, cfg.SherpaONNX.Precision, resolveConfigPath(configDir, cfg.SherpaONNX.EncoderPath))
+		decoderPath := sherpaONNXModelPathForPrecision(cfg.SherpaONNX.ModelType, cfg.SherpaONNX.Precision, resolveConfigPath(configDir, cfg.SherpaONNX.DecoderPath))
+		return asr.NewSherpaONNXProvider(asr.SherpaONNXConfig{
+			ModelType:      cfg.SherpaONNX.ModelType,
+			Precision:      cfg.SherpaONNX.Precision,
+			TokensPath:     resolveConfigPath(configDir, cfg.SherpaONNX.TokensPath),
+			EncoderPath:    encoderPath,
+			DecoderPath:    decoderPath,
+			JoinerPath:     resolveConfigPath(configDir, cfg.SherpaONNX.JoinerPath),
+			NumThreads:     cfg.SherpaONNX.NumThreads,
+			DecodingMethod: cfg.SherpaONNX.DecodingMethod,
+			FeatureDim:     cfg.SherpaONNX.FeatureDim,
+			Provider:       cfg.SherpaONNX.Provider,
+		})
+	}
 	if provider == "funasr_external" {
 		return asr.NewUpstreamProvider(nil, asr.UpstreamProviderConfig{
 			URL:     fmt.Sprintf("ws://%s:%d/ws", cfg.Host, cfg.Port),
@@ -105,6 +121,30 @@ func newASRProviderFromConfig(cfg config.ASRConfig, configDir string) (ASRProvid
 		Mode:    cfg.Mode,
 		Timeout: 5 * time.Second,
 	}), nil
+}
+
+func sherpaONNXModelPathForPrecision(modelType, precision, path string) string {
+	if strings.TrimSpace(modelType) != "paraformer" {
+		return path
+	}
+	dir := filepath.Dir(path)
+	switch strings.TrimSpace(precision) {
+	case "fp32":
+		switch filepath.Base(path) {
+		case "encoder.int8.onnx":
+			return filepath.Join(dir, "encoder.onnx")
+		case "decoder.int8.onnx":
+			return filepath.Join(dir, "decoder.onnx")
+		}
+	default:
+		switch filepath.Base(path) {
+		case "encoder.onnx":
+			return filepath.Join(dir, "encoder.int8.onnx")
+		case "decoder.onnx":
+			return filepath.Join(dir, "decoder.int8.onnx")
+		}
+	}
+	return path
 }
 
 func asrWebsocketURL(host string, port int) string {

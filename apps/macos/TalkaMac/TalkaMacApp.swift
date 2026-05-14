@@ -19,6 +19,7 @@ enum ShellWindowID {
 }
 
 enum ASRProviderOption: String, CaseIterable, Identifiable {
+    case sherpa = "sherpa_onnx_streaming"
     case embedded = "funasr_embedded"
     case external = "funasr_external"
     case sidecar = "sidecar"
@@ -28,6 +29,8 @@ enum ASRProviderOption: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .sherpa:
+            return "Sherpa ONNX"
         case .embedded:
             return "Embedded Runtime"
         case .external:
@@ -41,6 +44,7 @@ enum ASRProviderOption: String, CaseIterable, Identifiable {
 }
 
 enum ASRModeOption: String, CaseIterable, Identifiable {
+    case sherpa = "sherpa_onnx_streaming"
     case embedded = "funasr_embedded"
     case external = "funasr_external"
 
@@ -48,6 +52,8 @@ enum ASRModeOption: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
+        case .sherpa:
+            return "Sherpa"
         case .embedded:
             return "Embedded"
         case .external:
@@ -548,11 +554,11 @@ struct ControlConfig: Equatable {
         path: "",
         server: ControlServerConfig(bindHost: "127.0.0.1", port: 8080, serviceName: "Talka"),
         asr: ControlASRConfig(
-            provider: "funasr_embedded",
+            provider: "sherpa_onnx_streaming",
             runtimePath: "talka-asr-runtime",
             host: "127.0.0.1",
             port: 10095,
-            mode: "2pass",
+            mode: "streaming",
             sampleRate: 16_000,
             startupTimeoutSeconds: 180,
             containerImage: "",
@@ -566,6 +572,18 @@ struct ControlConfig: Equatable {
                 punc: "models/funasr/ct-punc-onnx",
                 itn: "models/funasr/itn-zh",
                 lm: ""
+            ),
+            sherpaONNX: ControlSherpaONNXConfig(
+                modelType: "paraformer",
+                precision: "int8",
+                tokensPath: "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/tokens.txt",
+                encoderPath: "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/encoder.int8.onnx",
+                decoderPath: "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/decoder.int8.onnx",
+                joinerPath: "",
+                numThreads: 2,
+                decodingMethod: "greedy_search",
+                featureDim: 80,
+                provider: "cpu"
             )
         ),
         llm: ControlLLMConfig(provider: "ollama", baseURL: "http://localhost:11434", model: "qwen3:8b", timeoutSeconds: 30),
@@ -599,6 +617,37 @@ struct ControlASRConfig: Codable, Equatable {
     var downloadDir: String
     var hotwordPath: String
     var models: ControlASRModelsConfig
+    var sherpaONNX: ControlSherpaONNXConfig
+
+    init(
+        provider: String,
+        runtimePath: String,
+        host: String,
+        port: Int,
+        mode: String,
+        sampleRate: Int,
+        startupTimeoutSeconds: Int,
+        containerImage: String,
+        containerName: String,
+        downloadDir: String,
+        hotwordPath: String,
+        models: ControlASRModelsConfig,
+        sherpaONNX: ControlSherpaONNXConfig = .default
+    ) {
+        self.provider = provider
+        self.runtimePath = runtimePath
+        self.host = host
+        self.port = port
+        self.mode = mode
+        self.sampleRate = sampleRate
+        self.startupTimeoutSeconds = startupTimeoutSeconds
+        self.containerImage = containerImage
+        self.containerName = containerName
+        self.downloadDir = downloadDir
+        self.hotwordPath = hotwordPath
+        self.models = models
+        self.sherpaONNX = sherpaONNX
+    }
 
     enum CodingKeys: String, CodingKey {
         case provider
@@ -613,6 +662,24 @@ struct ControlASRConfig: Codable, Equatable {
         case downloadDir = "download_dir"
         case hotwordPath = "hotword_path"
         case models
+        case sherpaONNX = "sherpa_onnx"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        provider = try container.decode(String.self, forKey: .provider)
+        runtimePath = try container.decode(String.self, forKey: .runtimePath)
+        host = try container.decode(String.self, forKey: .host)
+        port = try container.decode(Int.self, forKey: .port)
+        mode = try container.decode(String.self, forKey: .mode)
+        sampleRate = try container.decode(Int.self, forKey: .sampleRate)
+        startupTimeoutSeconds = try container.decode(Int.self, forKey: .startupTimeoutSeconds)
+        containerImage = try container.decode(String.self, forKey: .containerImage)
+        containerName = try container.decode(String.self, forKey: .containerName)
+        downloadDir = try container.decode(String.self, forKey: .downloadDir)
+        hotwordPath = try container.decode(String.self, forKey: .hotwordPath)
+        models = try container.decode(ControlASRModelsConfig.self, forKey: .models)
+        sherpaONNX = try container.decodeIfPresent(ControlSherpaONNXConfig.self, forKey: .sherpaONNX) ?? .default
     }
 }
 
@@ -623,6 +690,84 @@ struct ControlASRModelsConfig: Codable, Equatable {
     var punc: String
     var itn: String
     var lm: String
+}
+
+struct ControlSherpaONNXConfig: Codable, Equatable {
+    var modelType: String
+    var precision: String
+    var tokensPath: String
+    var encoderPath: String
+    var decoderPath: String
+    var joinerPath: String
+    var numThreads: Int
+    var decodingMethod: String
+    var featureDim: Int
+    var provider: String
+
+    static let `default` = ControlSherpaONNXConfig(
+        modelType: "paraformer",
+        precision: "int8",
+        tokensPath: "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/tokens.txt",
+        encoderPath: "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/encoder.int8.onnx",
+        decoderPath: "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/decoder.int8.onnx",
+        joinerPath: "",
+        numThreads: 2,
+        decodingMethod: "greedy_search",
+        featureDim: 80,
+        provider: "cpu"
+    )
+
+    enum CodingKeys: String, CodingKey {
+        case modelType = "model_type"
+        case precision
+        case tokensPath = "tokens_path"
+        case encoderPath = "encoder_path"
+        case decoderPath = "decoder_path"
+        case joinerPath = "joiner_path"
+        case numThreads = "num_threads"
+        case decodingMethod = "decoding_method"
+        case featureDim = "feature_dim"
+        case provider
+    }
+
+    init(
+        modelType: String,
+        precision: String,
+        tokensPath: String,
+        encoderPath: String,
+        decoderPath: String,
+        joinerPath: String,
+        numThreads: Int,
+        decodingMethod: String,
+        featureDim: Int,
+        provider: String
+    ) {
+        self.modelType = modelType
+        self.precision = precision
+        self.tokensPath = tokensPath
+        self.encoderPath = encoderPath
+        self.decoderPath = decoderPath
+        self.joinerPath = joinerPath
+        self.numThreads = numThreads
+        self.decodingMethod = decodingMethod
+        self.featureDim = featureDim
+        self.provider = provider
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let joinerPath = try container.decodeIfPresent(String.self, forKey: .joinerPath) ?? ""
+        modelType = try container.decodeIfPresent(String.self, forKey: .modelType) ?? (joinerPath.isEmpty ? "paraformer" : "transducer")
+        precision = try container.decodeIfPresent(String.self, forKey: .precision) ?? "int8"
+        tokensPath = try container.decode(String.self, forKey: .tokensPath)
+        encoderPath = try container.decode(String.self, forKey: .encoderPath)
+        decoderPath = try container.decode(String.self, forKey: .decoderPath)
+        self.joinerPath = joinerPath
+        numThreads = try container.decode(Int.self, forKey: .numThreads)
+        decodingMethod = try container.decode(String.self, forKey: .decodingMethod)
+        featureDim = try container.decode(Int.self, forKey: .featureDim)
+        provider = try container.decode(String.self, forKey: .provider)
+    }
 }
 
 struct ControlLLMConfig: Codable, Equatable {

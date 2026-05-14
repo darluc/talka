@@ -858,6 +858,30 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertFalse(contents.contains("/Applications/TalkaMac.app/Contents/Resources"))
     }
 
+    func testRuntimeConfigGeneratorUsesSherpaWhenBundledAssetsExist() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let resourcesDir = tempDir.appendingPathComponent("resources", isDirectory: true)
+        let frameworksDir = tempDir.appendingPathComponent("Frameworks", isDirectory: true)
+        let sherpaDir = resourcesDir.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en", isDirectory: true)
+        let configURL = tempDir.appendingPathComponent("config.yaml")
+        try FileManager.default.createDirectory(at: sherpaDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: frameworksDir, withIntermediateDirectories: true)
+        for name in ["tokens.txt", "encoder.int8.onnx", "decoder.int8.onnx"] {
+            try "asset".write(to: sherpaDir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+        }
+        try "dylib".write(to: frameworksDir.appendingPathComponent("libsherpa-onnx-c-api.dylib"), atomically: true, encoding: .utf8)
+        setenv("TALKA_CONFIG_PATH", configURL.path, 1)
+        setenv("TALKA_RESOURCES_PATH", resourcesDir.path, 1)
+
+        _ = try EmbeddedRuntimeConfigGenerator().generateConfig()
+
+        let contents = try String(contentsOf: configURL, encoding: .utf8)
+        XCTAssertTrue(contents.contains("asr:\n  provider: sherpa_onnx_streaming"))
+        XCTAssertTrue(contents.contains("model_type: paraformer"))
+        XCTAssertTrue(contents.contains("precision: int8"))
+        XCTAssertTrue(contents.contains("tokens_path: \(sherpaDir.appendingPathComponent("tokens.txt").path)"))
+    }
+
     func testRuntimeConfigGeneratorDoesNotDuplicateProviderInSavedFourSpaceConfig() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let resourcesDir = tempDir.appendingPathComponent("resources", isDirectory: true)

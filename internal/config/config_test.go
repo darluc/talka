@@ -132,7 +132,7 @@ func TestLoadRejectsMissingEmbeddedOnlineModel(t *testing.T) {
 	mustMkdir(t, tmpDir, "models/vad")
 	mustMkdir(t, tmpDir, "models/punc")
 	mustMkdir(t, tmpDir, "models/itn")
-configPath := writeTempConfig(t, tmpDir, []byte(`asr:
+	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
   provider: funasr_embedded
   runtime_path: runtime
   port: 10095
@@ -157,7 +157,7 @@ configPath := writeTempConfig(t, tmpDir, []byte(`asr:
 
 func TestLoadAllowsExternalFunASRWithoutLocalRuntimeAssets(t *testing.T) {
 	tmpDir := t.TempDir()
-configPath := writeTempConfig(t, tmpDir, []byte(`asr:
+	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
   provider: funasr_external
   host: 127.0.0.1
   port: 10095
@@ -173,6 +173,158 @@ configPath := writeTempConfig(t, tmpDir, []byte(`asr:
 
 	if cfg.ASR.Provider != "funasr_external" {
 		t.Fatalf("ASR.Provider = %q, want %q", cfg.ASR.Provider, "funasr_external")
+	}
+}
+
+func TestLoadAcceptsSherpaONNXStreamingConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	mustMkdir(t, tmpDir, "models/sherpa")
+	for _, name := range []string{"tokens.txt", "encoder.onnx", "decoder.onnx"} {
+		if err := os.WriteFile(filepath.Join(tmpDir, "models/sherpa", name), []byte("model"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", name, err)
+		}
+	}
+
+	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
+  provider: sherpa_onnx_streaming
+  host: 127.0.0.1
+  port: 10095
+  mode: streaming
+  sample_rate: 16000
+  startup_timeout_seconds: 180
+  sherpa_onnx:
+    model_type: paraformer
+    tokens_path: models/sherpa/tokens.txt
+    encoder_path: models/sherpa/encoder.onnx
+    decoder_path: models/sherpa/decoder.onnx
+    joiner_path: ""
+    num_threads: 2
+    decoding_method: greedy_search
+    feature_dim: 80
+    provider: cpu
+`))
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ASR.Provider != "sherpa_onnx_streaming" {
+		t.Fatalf("ASR.Provider = %q, want sherpa_onnx_streaming", cfg.ASR.Provider)
+	}
+	if cfg.ASR.SherpaONNX.TokensPath != "models/sherpa/tokens.txt" {
+		t.Fatalf("TokensPath = %q, want configured path", cfg.ASR.SherpaONNX.TokensPath)
+	}
+	if cfg.ASR.SherpaONNX.ModelType != "paraformer" {
+		t.Fatalf("ModelType = %q, want paraformer", cfg.ASR.SherpaONNX.ModelType)
+	}
+	if cfg.ASR.SherpaONNX.Precision != "int8" {
+		t.Fatalf("Precision = %q, want int8 default", cfg.ASR.SherpaONNX.Precision)
+	}
+}
+
+func TestLoadAcceptsSherpaONNXFP32Precision(t *testing.T) {
+	tmpDir := t.TempDir()
+	mustMkdir(t, tmpDir, "models/sherpa")
+	for _, name := range []string{"tokens.txt", "encoder.onnx", "decoder.onnx"} {
+		if err := os.WriteFile(filepath.Join(tmpDir, "models/sherpa", name), []byte("model"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", name, err)
+		}
+	}
+
+	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
+  provider: sherpa_onnx_streaming
+  host: 127.0.0.1
+  port: 10095
+  mode: streaming
+  sample_rate: 16000
+  startup_timeout_seconds: 180
+  sherpa_onnx:
+    model_type: paraformer
+    precision: fp32
+    tokens_path: models/sherpa/tokens.txt
+    encoder_path: models/sherpa/encoder.onnx
+    decoder_path: models/sherpa/decoder.onnx
+    joiner_path: ""
+    num_threads: 2
+    decoding_method: greedy_search
+    feature_dim: 80
+    provider: cpu
+`))
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ASR.SherpaONNX.Precision != "fp32" {
+		t.Fatalf("Precision = %q, want fp32", cfg.ASR.SherpaONNX.Precision)
+	}
+}
+
+func TestLoadRejectsInvalidSherpaONNXPrecision(t *testing.T) {
+	tmpDir := t.TempDir()
+	mustMkdir(t, tmpDir, "models/sherpa")
+	for _, name := range []string{"tokens.txt", "encoder.onnx", "decoder.onnx"} {
+		if err := os.WriteFile(filepath.Join(tmpDir, "models/sherpa", name), []byte("model"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", name, err)
+		}
+	}
+
+	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
+  provider: sherpa_onnx_streaming
+  host: 127.0.0.1
+  port: 10095
+  mode: streaming
+  sample_rate: 16000
+  startup_timeout_seconds: 180
+  sherpa_onnx:
+    model_type: paraformer
+    precision: half
+    tokens_path: models/sherpa/tokens.txt
+    encoder_path: models/sherpa/encoder.onnx
+    decoder_path: models/sherpa/decoder.onnx
+    joiner_path: ""
+    num_threads: 2
+    decoding_method: greedy_search
+    feature_dim: 80
+    provider: cpu
+`))
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid precision error")
+	}
+	if got := err.Error(); !containsAll(got, []string{"asr.sherpa_onnx.precision", "must be one of int8, fp32"}) {
+		t.Fatalf("Load() error = %q, want precision validation error", got)
+	}
+}
+
+func TestLoadRejectsMissingSherpaONNXModelFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
+  provider: sherpa_onnx_streaming
+  host: 127.0.0.1
+  port: 10095
+  mode: streaming
+  sample_rate: 16000
+  startup_timeout_seconds: 180
+  sherpa_onnx:
+    model_type: paraformer
+    tokens_path: models/sherpa/tokens.txt
+    encoder_path: models/sherpa/encoder.onnx
+    decoder_path: models/sherpa/decoder.onnx
+    joiner_path: ""
+    num_threads: 2
+    decoding_method: greedy_search
+    feature_dim: 80
+    provider: cpu
+`))
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("Load() error = nil, want missing sherpa model error")
+	}
+	if got := err.Error(); !containsAll(got, []string{"asr.sherpa_onnx.tokens_path", "must exist"}) {
+		t.Fatalf("Load() error = %q, want sherpa model path error", got)
 	}
 }
 

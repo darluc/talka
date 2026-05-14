@@ -172,9 +172,45 @@ func (cfg Config) Validate(baseDir string) error {
 			validateNonEmpty("asr.hotword_path", cfg.ASR.HotwordPath)
 		}
 	case "sidecar":
-		// Legacy Talka proxy sidecar only needs host/port validation above.
+	// Legacy Talka proxy sidecar only needs host/port validation above.
+	case "sherpa_onnx_streaming":
+		modelType := strings.TrimSpace(cfg.ASR.SherpaONNX.ModelType)
+		if modelType == "" {
+			if strings.TrimSpace(cfg.ASR.SherpaONNX.JoinerPath) != "" {
+				modelType = "transducer"
+			} else {
+				modelType = "paraformer"
+			}
+		}
+		if modelType != "transducer" && modelType != "paraformer" {
+			appendIssue("asr.sherpa_onnx.model_type", cfg.ASR.SherpaONNX.ModelType, "must be one of transducer, paraformer")
+		}
+		precision := strings.TrimSpace(cfg.ASR.SherpaONNX.Precision)
+		if precision == "" {
+			cfg.ASR.SherpaONNX.Precision = "int8"
+		} else if precision != "int8" && precision != "fp32" {
+			appendIssue("asr.sherpa_onnx.precision", cfg.ASR.SherpaONNX.Precision, "must be one of int8, fp32")
+		}
+		validatePath("asr.sherpa_onnx.tokens_path", cfg.ASR.SherpaONNX.TokensPath)
+		validatePath("asr.sherpa_onnx.encoder_path", cfg.ASR.SherpaONNX.EncoderPath)
+		validatePath("asr.sherpa_onnx.decoder_path", cfg.ASR.SherpaONNX.DecoderPath)
+		if modelType == "transducer" {
+			validatePath("asr.sherpa_onnx.joiner_path", cfg.ASR.SherpaONNX.JoinerPath)
+		}
+		if cfg.ASR.SherpaONNX.NumThreads <= 0 {
+			appendIssue("asr.sherpa_onnx.num_threads", fmt.Sprintf("%d", cfg.ASR.SherpaONNX.NumThreads), "must be greater than zero")
+		}
+		if strings.TrimSpace(cfg.ASR.SherpaONNX.DecodingMethod) == "" {
+			appendIssue("asr.sherpa_onnx.decoding_method", cfg.ASR.SherpaONNX.DecodingMethod, "must not be empty")
+		}
+		if cfg.ASR.SherpaONNX.FeatureDim <= 0 {
+			appendIssue("asr.sherpa_onnx.feature_dim", fmt.Sprintf("%d", cfg.ASR.SherpaONNX.FeatureDim), "must be greater than zero")
+		}
+		if strings.TrimSpace(cfg.ASR.SherpaONNX.Provider) == "" {
+			appendIssue("asr.sherpa_onnx.provider", cfg.ASR.SherpaONNX.Provider, "must not be empty")
+		}
 	default:
-		appendIssue("asr.provider", cfg.ASR.Provider, "must be one of funasr_embedded, funasr_external, funasr_container, sidecar")
+		appendIssue("asr.provider", cfg.ASR.Provider, "must be one of funasr_embedded, funasr_external, funasr_container, sidecar, sherpa_onnx_streaming")
 	}
 
 	if strings.TrimSpace(cfg.LLM.Provider) == "" {

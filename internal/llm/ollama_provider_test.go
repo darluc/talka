@@ -70,6 +70,9 @@ func TestOllamaProviderUsesStrictChatCleanupContract(t *testing.T) {
 		}
 
 		mustContainAll(t, req.Messages[0].Content, []string{
+			"The input text is produced by ASR",
+			"fix obvious speech-recognition mistakes",
+			"mixed Chinese-English recognition errors",
 			"Do not add facts.",
 			"Do not change meaning.",
 			"Do not use markdown.",
@@ -169,12 +172,18 @@ func TestCleanupPromptsStayStrictForSegmentAndFinalModes(t *testing.T) {
 	final := promptForCleanup(cleanupModeFinal, "今天天气不错我们下午两点开会")
 
 	mustContainAll(t, segment[0].Content, []string{
+		"The input text is produced by ASR",
+		"fix obvious speech-recognition mistakes",
+		"mixed Chinese-English recognition errors",
 		"light punctuation",
 		"Do not add facts.",
 		"Output only the cleaned segment text.",
 	})
 	mustContainAll(t, final[0].Content, []string{
 		"merge the dictated text into the final insertable result",
+		"The input text is produced by ASR",
+		"fix obvious speech-recognition mistakes",
+		"mixed Chinese-English recognition errors",
 		"Do not use markdown.",
 		"Output only the final cleaned text.",
 	})

@@ -130,27 +130,37 @@ func (p *Pipeline) PrepareAudioFramesWithTimings(ctx context.Context, metadata p
 		return ProcessResult{}, timings, err
 	}
 
+	result, llmDuration, err := p.prepareASRResult(ctx, transcript)
+	timings.LLM = llmDuration
+	return result, timings, err
+}
+
+func (p *Pipeline) PrepareASRResult(ctx context.Context, transcript asr.Result) (ProcessResult, time.Duration, error) {
+	return p.prepareASRResult(ctx, transcript)
+}
+
+func (p *Pipeline) prepareASRResult(ctx context.Context, transcript asr.Result) (ProcessResult, time.Duration, error) {
 	rawTranscript := strings.TrimSpace(transcript.Transcript)
 	if rawTranscript == "" {
 		return ProcessResult{
 			RawTranscript: "",
 			FinalText:     "",
 			Cleanup:       llm.Result{Text: "", RawTranscript: "", Status: llm.StatusCleaned},
-		}, timings, nil
+		}, 0, nil
 	}
 
 	llmStartedAt := time.Now()
 	cleanup, err := p.llm.Cleanup(ctx, rawTranscript)
-	timings.LLM = time.Since(llmStartedAt)
+	llmDuration := time.Since(llmStartedAt)
 	if err != nil {
-		return ProcessResult{}, timings, err
+		return ProcessResult{}, llmDuration, err
 	}
 
 	return ProcessResult{
 		RawTranscript: rawTranscript,
 		FinalText:     cleanup.Text,
 		Cleanup:       cleanup,
-	}, timings, nil
+	}, llmDuration, nil
 }
 
 func (p *Pipeline) InsertText(ctx context.Context, text string) (inject.Receipt, error) {

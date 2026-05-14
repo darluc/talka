@@ -229,13 +229,9 @@ func decryptIOSAudioMessages(machine *session.StateMachine, messages []session.E
 	stopped := false
 
 	for index, message := range messages {
-		plaintext, err := machine.Decrypt(message)
+		decoded, err := decryptIOSAudioMessage(machine, message)
 		if err != nil {
 			return protocol.AudioMetadata{}, nil, fmt.Errorf("decrypt message %d (seq=%d, type=%s): %w", index, message.Seq, message.Type, err)
-		}
-		decoded, err := protocol.Decode(plaintext)
-		if err != nil {
-			return protocol.AudioMetadata{}, nil, err
 		}
 		switch typed := decoded.(type) {
 		case protocol.AudioStart:
@@ -281,4 +277,12 @@ func decryptIOSAudioMessages(machine *session.StateMachine, messages []session.E
 		return protocol.AudioMetadata{}, nil, fmt.Errorf("audio_stop is required")
 	}
 	return metadata, frames, nil
+}
+
+func decryptIOSAudioMessage(machine *session.StateMachine, message session.EncryptedMessage) (any, error) {
+	plaintext, err := machine.Decrypt(message)
+	if err != nil {
+		return nil, err
+	}
+	return protocol.Decode(plaintext)
 }

@@ -25,23 +25,11 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
         }
 
 	let resourcesURL = try runtimeResourcesURL()
-		let runtimeURL = resourcesURL.appendingPathComponent("talka-asr-runtime")
-		let funasrBinaryURL = resourcesURL.appendingPathComponent("funasr-wss-server-2pass")
-		let modelsURL = resourcesURL.appendingPathComponent("models/funasr")
-		let hotwordsPath = hotwordsPath(resourcesURL: resourcesURL)
 			let originalYAML = yaml
 
 			yaml = removeMalformedEmbeddedResourceLines(from: yaml)
 			yaml = removeDuplicatedEmbeddedASRProvider(from: yaml)
-			yaml = ensureEmbeddedASRProvider(in: yaml)
-		yaml = replaceYAMLValue(named: "runtime_path", indent: "  ", with: runtimeURL.path, in: yaml)
-		yaml = replaceYAMLValue(named: "funasr_binary_path", indent: "  ", with: funasrBinaryURL.path, in: yaml)
-		yaml = replaceYAMLValue(named: "hotword_path", indent: "  ", with: hotwordsPath, in: yaml)
-        yaml = replaceYAMLValue(named: "asr", indent: "    ", with: modelsURL.appendingPathComponent("paraformer-zh-onnx").path, in: yaml)
-        yaml = replaceYAMLValue(named: "online", indent: "    ", with: modelsURL.appendingPathComponent("paraformer-zh-online-onnx").path, in: yaml)
-        yaml = replaceYAMLValue(named: "vad", indent: "    ", with: modelsURL.appendingPathComponent("fsmn-vad-onnx").path, in: yaml)
-        yaml = replaceYAMLValue(named: "punc", indent: "    ", with: modelsURL.appendingPathComponent("ct-punc-onnx").path, in: yaml)
-        yaml = replaceYAMLValue(named: "itn", indent: "    ", with: modelsURL.appendingPathComponent("itn-zh").path, in: yaml)
+            yaml = replaceASRBlock(in: yaml, resourcesURL: resourcesURL)
 
         if yaml != originalYAML {
             try yaml.write(to: configURL, atomically: true, encoding: .utf8)
@@ -54,6 +42,8 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
 		|| yaml.contains("talka-asr-runtime")
 		|| yaml.contains("funasr-wss-server-2pass")
 		|| yaml.contains("/models/funasr/")
+		|| yaml.contains("provider: sherpa_onnx_streaming")
+		|| yaml.contains("/models/sherpa-onnx/")
 	}
 
     private func removeMalformedEmbeddedResourceLines(from yaml: String) -> String {
@@ -82,6 +72,23 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
             with: "asr:\n  provider: funasr_embedded\n",
             options: .regularExpression
         )
+    }
+
+    private func replaceASRBlock(in yaml: String, resourcesURL: URL) -> String {
+        let block = defaultASRYAML(resourcesURL: resourcesURL)
+        if yaml.range(of: #"(?ms)^asr:\n.*?(?=^llm:\n)"#, options: .regularExpression) != nil {
+            return yaml.replacingOccurrences(
+                of: #"(?ms)^asr:\n.*?(?=^llm:\n)"#,
+                with: block + "\n",
+                options: .regularExpression
+            )
+        }
+
+        return yaml.replacingOccurrences(
+            of: #"(?m)^server:\n"#,
+            with: "server:\n",
+            options: .regularExpression
+        ) + "\n" + block
     }
 
     private func replaceYAMLValue(named key: String, indent: String, with value: String, in yaml: String) -> String {
@@ -135,17 +142,132 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
     }
 
 	private func defaultConfigYAML(resourcesURL: URL) -> String {
-		let runtimeURL = resourcesURL.appendingPathComponent("talka-asr-runtime")
-		let funasrBinaryURL = resourcesURL.appendingPathComponent("funasr-wss-server-2pass")
-		let modelsURL = resourcesURL.appendingPathComponent("models/funasr")
-		let hotwordsPath = hotwordsPath(resourcesURL: resourcesURL)
-
 		return """
 server:
   bind_host: 0.0.0.0
   port: 8080
   service_name: Talka
 
+\(defaultASRYAML(resourcesURL: resourcesURL))
+
+llm:
+  provider: ollama
+  base_url: http://localhost:11434
+  model: qwen3:8b
+  timeout_seconds: 30
+
+injection:
+  mode: clipboard_paste
+  restore_clipboard: true
+
+logging:
+  level: info
+"""
+	}
+
+    private func defaultASRYAML(resourcesURL: URL) -> String {
+        if let sherpaModel = availableSherpaModel(resourcesURL: resourcesURL) {
+            return sherpaASRYAML(resourcesURL: resourcesURL, model: sherpaModel)
+        }
+        return funasrASRYAML(resourcesURL: resourcesURL)
+    }
+
+    private struct SherpaModelBundle {
+        let modelType: String
+        let precision: String
+        let directory: URL
+        let encoderFile: String
+        let decoderFile: String
+        let joinerFile: String
+    }
+
+    private func availableSherpaModel(resourcesURL: URL) -> SherpaModelBundle? {
+        let frameworksURL = resourcesURL.deletingLastPathComponent().appendingPathComponent("Frameworks")
+        let dylibs = (try? FileManager.default.contentsOfDirectory(atPath: frameworksURL.path)) ?? []
+        let hasLibrary = dylibs.contains { $0.hasPrefix("libsherpa-onnx-c-api") && $0.hasSuffix(".dylib") }
+        guard hasLibrary else { return nil }
+
+        let candidates = [
+            SherpaModelBundle(
+                modelType: "paraformer",
+                precision: "int8",
+                directory: resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en"),
+                encoderFile: "encoder.int8.onnx",
+                decoderFile: "decoder.int8.onnx",
+                joinerFile: ""
+            ),
+            SherpaModelBundle(
+                modelType: "transducer",
+                precision: "int8",
+                directory: resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-zipformer-bilingual-zh-en"),
+                encoderFile: "encoder-epoch-99-avg-1.int8.onnx",
+                decoderFile: "decoder-epoch-99-avg-1.onnx",
+                joinerFile: "joiner-epoch-99-avg-1.int8.onnx"
+            ),
+        ]
+
+        return candidates.first { model in
+            var requiredModelFiles = [
+                model.directory.appendingPathComponent("tokens.txt"),
+                model.directory.appendingPathComponent(model.encoderFile),
+                model.directory.appendingPathComponent(model.decoderFile),
+            ]
+            if !model.joinerFile.isEmpty {
+                requiredModelFiles.append(model.directory.appendingPathComponent(model.joinerFile))
+            }
+            return requiredModelFiles.allSatisfy { FileManager.default.fileExists(atPath: $0.path) }
+        }
+    }
+
+    private func sherpaASRYAML(resourcesURL: URL, model: SherpaModelBundle) -> String {
+        let runtimeURL = resourcesURL.appendingPathComponent("talka-asr-runtime")
+        let funasrBinaryURL = resourcesURL.appendingPathComponent("funasr-wss-server-2pass")
+        let funasrModelsURL = resourcesURL.appendingPathComponent("models/funasr")
+        let hotwordsPath = hotwordsPath(resourcesURL: resourcesURL)
+        let joinerPath = model.joinerFile.isEmpty ? "" : model.directory.appendingPathComponent(model.joinerFile).path
+
+        return """
+asr:
+  provider: sherpa_onnx_streaming
+  runtime_path: \(runtimeURL.path)
+  funasr_binary_path: \(funasrBinaryURL.path)
+  host: 127.0.0.1
+  port: 10095
+  mode: streaming
+  sample_rate: 16000
+  startup_timeout_seconds: 180
+  container_image: ""
+  container_name: ""
+  download_dir: ""
+  hotword_path: \(hotwordsPath)
+  models:
+    asr: \(funasrModelsURL.appendingPathComponent("paraformer-zh-onnx").path)
+    online: \(funasrModelsURL.appendingPathComponent("paraformer-zh-online-onnx").path)
+    vad: \(funasrModelsURL.appendingPathComponent("fsmn-vad-onnx").path)
+    punc: \(funasrModelsURL.appendingPathComponent("ct-punc-onnx").path)
+    itn: \(funasrModelsURL.appendingPathComponent("itn-zh").path)
+    lm: ""
+  sherpa_onnx:
+    model_type: \(model.modelType)
+    precision: \(model.precision)
+    tokens_path: \(model.directory.appendingPathComponent("tokens.txt").path)
+    encoder_path: \(model.directory.appendingPathComponent(model.encoderFile).path)
+    decoder_path: \(model.directory.appendingPathComponent(model.decoderFile).path)
+    joiner_path: \(joinerPath)
+    num_threads: 2
+    decoding_method: greedy_search
+    feature_dim: 80
+    provider: cpu
+"""
+    }
+
+    private func funasrASRYAML(resourcesURL: URL) -> String {
+        let runtimeURL = resourcesURL.appendingPathComponent("talka-asr-runtime")
+        let funasrBinaryURL = resourcesURL.appendingPathComponent("funasr-wss-server-2pass")
+        let modelsURL = resourcesURL.appendingPathComponent("models/funasr")
+        let hotwordsPath = hotwordsPath(resourcesURL: resourcesURL)
+
+        return """
 asr:
   provider: funasr_embedded
   runtime_path: \(runtimeURL.path)
@@ -166,19 +288,17 @@ asr:
     punc: \(modelsURL.appendingPathComponent("ct-punc-onnx").path)
     itn: \(modelsURL.appendingPathComponent("itn-zh").path)
     lm: ""
-
-llm:
-  provider: ollama
-  base_url: http://localhost:11434
-  model: qwen3:8b
-  timeout_seconds: 30
-
-injection:
-  mode: clipboard_paste
-  restore_clipboard: true
-
-logging:
-  level: info
+  sherpa_onnx:
+    model_type: paraformer
+    precision: int8
+    tokens_path: \(resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/tokens.txt").path)
+    encoder_path: \(resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/encoder.int8.onnx").path)
+    decoder_path: \(resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/decoder.int8.onnx").path)
+    joiner_path: ""
+    num_threads: 2
+    decoding_method: greedy_search
+    feature_dim: 80
+    provider: cpu
 """
-	}
+    }
 }

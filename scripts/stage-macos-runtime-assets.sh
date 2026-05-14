@@ -32,6 +32,9 @@ RESOURCE_DIR="$APP_PATH/Contents/Resources"
 FRAMEWORKS_DIR="$APP_PATH/Contents/Frameworks"
 MODEL_SOURCE_DIR="${TALKA_MODEL_SOURCE_DIR:-$ROOT_DIR/models/funasr}"
 MODEL_DEST_DIR="$RESOURCE_DIR/models/funasr"
+SHERPA_MODEL_SOURCE_DIR="${TALKA_SHERPA_MODEL_SOURCE_DIR:-$ROOT_DIR/models/sherpa-onnx}"
+SHERPA_MODEL_DEST_DIR="$RESOURCE_DIR/models/sherpa-onnx"
+SHERPA_LIB_SOURCE_DIR="${TALKA_SHERPA_LIB_SOURCE_DIR:-$ROOT_DIR/third_party/sherpa-onnx/lib}"
 
 for required in \
   "$MODEL_SOURCE_DIR/paraformer-zh-onnx/model_quant.onnx" \
@@ -50,6 +53,26 @@ done
 mkdir -p "$MODEL_DEST_DIR" "$FRAMEWORKS_DIR"
 rsync -a --delete "$MODEL_SOURCE_DIR/" "$MODEL_DEST_DIR/"
 : > "$RESOURCE_DIR/hotwords.txt"
+
+SHERPA_DEFAULT_MODEL_DIR="$SHERPA_MODEL_SOURCE_DIR/streaming-paraformer-trilingual-zh-cantonese-en"
+for required in \
+  "$SHERPA_DEFAULT_MODEL_DIR/tokens.txt" \
+  "$SHERPA_DEFAULT_MODEL_DIR/encoder.int8.onnx" \
+  "$SHERPA_DEFAULT_MODEL_DIR/decoder.int8.onnx"
+do
+  if [ ! -f "$required" ]; then
+    printf 'error: missing embedded sherpa-onnx asset %s\n' "$required" >&2
+    exit 1
+  fi
+done
+mkdir -p "$SHERPA_MODEL_DEST_DIR"
+rsync -a --delete "$SHERPA_MODEL_SOURCE_DIR/" "$SHERPA_MODEL_DEST_DIR/"
+
+if ! ls "$SHERPA_LIB_SOURCE_DIR"/libsherpa-onnx-c-api*.dylib >/dev/null 2>&1; then
+  printf 'error: missing sherpa-onnx C API dylib in %s; run scripts/build-sherpa-onnx-runtime.sh\n' "$SHERPA_LIB_SOURCE_DIR" >&2
+  exit 1
+fi
+cp "$SHERPA_LIB_SOURCE_DIR"/*.dylib "$FRAMEWORKS_DIR/"
 
 # NOTE: The Go proxy binary (cmd/talka-asr-runtime) is already built and
 # placed by the Xcode "Build Go Binaries" phase. The C++ FunASR binary

@@ -26,6 +26,35 @@ type ASRProvider interface {
 	Transcribe(ctx context.Context, request Request) (Result, error)
 }
 
+type StreamingProvider interface {
+	NewStream(ctx context.Context, metadata protocol.AudioMetadata) (StreamingSession, error)
+}
+
+type StreamingSession interface {
+	AcceptFrame(ctx context.Context, frame []byte) (Result, error)
+	Finish(ctx context.Context) (Result, error)
+	Close(ctx context.Context) error
+}
+
+type StreamingBatchAdapter struct {
+	Provider StreamingProvider
+}
+
+func (a StreamingBatchAdapter) Transcribe(ctx context.Context, request Request) (Result, error) {
+	stream, err := a.Provider.NewStream(ctx, request.Metadata)
+	if err != nil {
+		return Result{}, err
+	}
+	defer stream.Close(ctx)
+
+	for _, frame := range request.Frames {
+		if _, err := stream.AcceptFrame(ctx, frame); err != nil {
+			return Result{}, err
+		}
+	}
+	return stream.Finish(ctx)
+}
+
 type SidecarProvider struct {
 	client *Client
 }

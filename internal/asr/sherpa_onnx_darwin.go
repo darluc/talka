@@ -154,6 +154,7 @@ func (s *sherpaONNXNativeStream) Finish(ctx context.Context) (Result, error) {
 	if s.closed || s.stream == nil {
 		return Result{}, fmt.Errorf("sherpa-onnx stream is closed")
 	}
+	s.acceptSilenceLocked(sherpaONNXFinalSilenceSampleCount(s.metadata.SampleRate))
 	C.SherpaOnnxOnlineStreamInputFinished(s.stream)
 	s.decodeReadyLocked()
 	return s.resultLocked()
@@ -187,6 +188,14 @@ func (s *sherpaONNXNativeStream) decodeReadyLocked() {
 		C.SherpaOnnxDecodeOnlineStream(recognizer, s.stream)
 		runtime.Gosched()
 	}
+}
+
+func (s *sherpaONNXNativeStream) acceptSilenceLocked(sampleCount int) {
+	if sampleCount <= 0 {
+		return
+	}
+	silence := make([]float32, sampleCount)
+	C.SherpaOnnxOnlineStreamAcceptWaveform(s.stream, C.int32_t(s.metadata.SampleRate), (*C.float)(unsafe.Pointer(&silence[0])), C.int32_t(len(silence)))
 }
 
 func (s *sherpaONNXNativeStream) resultLocked() (Result, error) {

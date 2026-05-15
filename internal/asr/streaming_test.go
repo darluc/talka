@@ -33,6 +33,15 @@ func TestStreamingBatchAdapterFeedsFramesAndFinishes(t *testing.T) {
 	}
 }
 
+func TestSherpaONNXFinalSilenceSampleCount(t *testing.T) {
+	if got := sherpaONNXFinalSilenceSampleCount(16_000); got != 4_800 {
+		t.Fatalf("sample count = %d, want 4800", got)
+	}
+	if got := sherpaONNXFinalSilenceSampleCount(0); got != 0 {
+		t.Fatalf("sample count for invalid rate = %d, want 0", got)
+	}
+}
+
 type recordingStreamingProvider struct {
 	result  Result
 	session *recordingStreamingSession

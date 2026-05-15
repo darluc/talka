@@ -61,6 +61,16 @@ final class TalkaIOSTests: XCTestCase {
         source.stop()
     }
 
+    func testMicrophoneCaptureUsesLowLatencyTapBuffer() throws {
+        let inputFormat = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44_100, channels: 1, interleaved: false))
+        let source = MicrophonePCMSource(engine: FakeAudioEngine(inputFormat: inputFormat), converter: AudioPCMConverter())
+
+        try source.start { _ in }
+
+        XCTAssertEqual(source.installedTapBufferSize, TalkaAudioFormat.captureTapBufferSize)
+        source.stop()
+    }
+
     func testMicrophoneCaptureConfiguresAudioSessionBeforeEngineStart() throws {
         let inputFormat = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 44_100, channels: 1, interleaved: false))
         var events: [String] = []
@@ -85,6 +95,19 @@ final class TalkaIOSTests: XCTestCase {
         let second = framer.append(Data(repeating: 2, count: 641))
         XCTAssertEqual(second.map(\.count), [640, 640])
         XCTAssertEqual(framer.bufferedByteCount, 0)
+    }
+
+    func testPCMFramerFlushesPartialTailAsPaddedFrame() {
+        var framer = PCMFrameAccumulator(frameByteCount: TalkaAudioFormat.frameByteCount)
+
+        _ = framer.append(Data(repeating: 7, count: 120))
+        let tail = framer.flushPaddedFrame()
+
+        XCTAssertEqual(tail?.count, TalkaAudioFormat.frameByteCount)
+        XCTAssertEqual(tail?.prefix(120), Data(repeating: 7, count: 120))
+        XCTAssertEqual(tail?.dropFirst(120), Data(repeating: 0, count: TalkaAudioFormat.frameByteCount - 120))
+        XCTAssertEqual(framer.bufferedByteCount, 0)
+        XCTAssertNil(framer.flushPaddedFrame())
     }
 
     func testAudioBreathingRingIntensityIsClampedInsideButtonBounds() {
@@ -131,6 +154,28 @@ final class TalkaIOSTests: XCTestCase {
         ])
 
         XCTAssertEqual(viewModel.recordingState, .idle)
+        XCTAssertEqual(streamClient.events, [
+            .start(.talkaDefault),
+            .frame(sequence: 1, byteCount: TalkaAudioFormat.frameByteCount),
+            .frame(sequence: 2, byteCount: TalkaAudioFormat.frameByteCount),
+            .stop(lastSequence: 2)
+        ])
+    }
+
+    func testAudioStreamClientFlushesPartialTailBeforeStop() async {
+        let streamClient = RecordingAudioStreamClient()
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(),
+            identityStore: FakePairedIdentityStore(),
+            audioStreamClient: streamClient
+        )
+
+        await viewModel.streamPCMChunksForTesting([
+            Data(repeating: 1, count: TalkaAudioFormat.frameByteCount),
+            Data(repeating: 2, count: 120)
+        ])
+
         XCTAssertEqual(streamClient.events, [
             .start(.talkaDefault),
             .frame(sequence: 1, byteCount: TalkaAudioFormat.frameByteCount),
@@ -549,6 +594,58 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertEqual(viewModel.recordingState, .idle)
     }
 
+    func testStopRecordingDrainsCapturedPCMBeforeSendingStop() async {
+        let streamClient = RecordingAudioStreamClient()
+        let microphoneSource = FakeMicrophoneSource()
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(),
+            identityStore: FakePairedIdentityStore(),
+            audioStreamClient: streamClient,
+            microphoneSource: microphoneSource
+        )
+
+        await viewModel.startRecording()
+        microphoneSource.emit(Data(repeating: 3, count: TalkaAudioFormat.frameByteCount))
+        await viewModel.stopRecording()
+
+        XCTAssertEqual(streamClient.events, [
+            .start(.talkaDefault),
+            .frame(sequence: 1, byteCount: TalkaAudioFormat.frameByteCount),
+            .stop(lastSequence: 1)
+        ])
+        XCTAssertEqual(viewModel.recordingState, .idle)
+    }
+
+    func testStopRecordingAllowsTailCaptureBeforeStoppingMicrophone() async {
+        let streamClient = RecordingAudioStreamClient()
+        let microphoneSource = FakeMicrophoneSource()
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(),
+            identityStore: FakePairedIdentityStore(),
+            audioStreamClient: streamClient,
+            microphoneSource: microphoneSource,
+            stopTailCaptureNanoseconds: 50_000_000
+        )
+
+        await viewModel.startRecording()
+        let stopTask = Task { @MainActor in
+            await viewModel.stopRecording()
+        }
+
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        microphoneSource.emit(Data(repeating: 4, count: TalkaAudioFormat.frameByteCount))
+        await stopTask.value
+
+        XCTAssertEqual(streamClient.events, [
+            .start(.talkaDefault),
+            .frame(sequence: 1, byteCount: TalkaAudioFormat.frameByteCount),
+            .stop(lastSequence: 1)
+        ])
+        XCTAssertEqual(viewModel.recordingState, .idle)
+    }
+
     func testLatePCMFrameAfterStopDoesNotFlipSuccessfulRecordingIntoFailure() async {
         let streamClient = BlockingStopAudioStreamClient()
         let microphoneSource = FakeMicrophoneSource()
@@ -596,7 +693,7 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertNil(viewModel.lastErrorMessage)
     }
 
-    func testInFlightAudioFrameFailureAfterStopDoesNotFlipSuccessfulRecordingIntoFailure() async {
+    func testStopRecordingWaitsForInFlightAudioFrameBeforeSendingStop() async {
         let streamClient = BlockingFrameAudioStreamClient()
         let microphoneSource = FakeMicrophoneSource()
         let viewModel = RemoteMicShellViewModel(
@@ -618,15 +715,17 @@ final class TalkaIOSTests: XCTestCase {
             await viewModel.stopRecording()
         }
 
+        await Task.yield()
+        XCTAssertFalse(streamClient.stopStarted)
+
+        streamClient.finishBlockedFrame()
         while !streamClient.stopStarted {
             await Task.yield()
         }
 
-        streamClient.failBlockedFrameAfterStop()
         await stopTask.value
-        try? await Task.sleep(nanoseconds: 50_000_000)
 
-        XCTAssertEqual(streamClient.stopLastSequence, 0)
+        XCTAssertEqual(streamClient.stopLastSequence, 1)
         XCTAssertEqual(viewModel.recordingState, .idle)
         XCTAssertNil(viewModel.lastErrorMessage)
         XCTAssertNil(viewModel.lastAudioDiagnostic)
@@ -1309,8 +1408,8 @@ private final class FakePairedIdentityStore: PairedIdentityStoring {
             _ = reason
         }
 
-        func failBlockedFrameAfterStop() {
-            frameContinuation?.resume(throwing: RemoteMicFlowError.recordingFailed("audio session could not be processed"))
+        func finishBlockedFrame() {
+            frameContinuation?.resume(returning: ())
             frameContinuation = nil
         }
     }
@@ -1346,6 +1445,7 @@ private final class FakePairedIdentityStore: PairedIdentityStoring {
         let inputFormat: AVAudioFormat
         private let events: (String) -> Void
         private(set) var installedTapFormat: AVAudioFormat?
+        private(set) var installedTapBufferSize: AVAudioFrameCount?
         private(set) var didStart = false
         private(set) var didStop = false
         private var tapBlock: AVAudioNodeTapBlock?
@@ -1356,14 +1456,15 @@ private final class FakePairedIdentityStore: PairedIdentityStoring {
     }
 
         func installInputTap(bufferSize: AVAudioFrameCount, format: AVAudioFormat, block: @escaping AVAudioNodeTapBlock) {
-            _ = bufferSize
             events("install-tap")
+            installedTapBufferSize = bufferSize
             installedTapFormat = format
             tapBlock = block
         }
 
     func removeInputTap() {
         installedTapFormat = nil
+        installedTapBufferSize = nil
     }
 
     func start() throws {
@@ -1395,6 +1496,7 @@ private final class FakePairedIdentityStore: PairedIdentityStoring {
     }
 
     func emit(_ pcm: Data) {
+        guard !didStop else { return }
         onPCM?(pcm)
     }
 }
@@ -1402,6 +1504,10 @@ private final class FakePairedIdentityStore: PairedIdentityStoring {
 private extension MicrophonePCMSource {
     var installedTapFormat: AVAudioFormat? {
         (engine as? FakeAudioEngine)?.installedTapFormat
+    }
+
+    var installedTapBufferSize: AVAudioFrameCount? {
+        (engine as? FakeAudioEngine)?.installedTapBufferSize
     }
 }
 

@@ -3,10 +3,13 @@ package asr
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 
 	"talka/internal/protocol"
 )
+
+const sherpaONNXFinalSilenceMS = 300
 
 type SherpaONNXConfig struct {
 	ModelType      string
@@ -81,4 +84,11 @@ func normalizeSherpaONNXConfig(config SherpaONNXConfig) SherpaONNXConfig {
 		config.Provider = "cpu"
 	}
 	return config
+}
+
+func sherpaONNXFinalSilenceSampleCount(sampleRate int) int {
+	if sampleRate <= 0 {
+		return 0
+	}
+	return int(math.Round(float64(sampleRate) * float64(sherpaONNXFinalSilenceMS) / 1000.0))
 }

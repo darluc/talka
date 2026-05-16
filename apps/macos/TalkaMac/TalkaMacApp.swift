@@ -15,49 +15,47 @@ enum ShellMetrics {
 
 enum ShellWindowID {
     static let pairing = "pairing"
-    static let diagnostics = "diagnostics"
 }
 
 enum ASRProviderOption: String, CaseIterable, Identifiable {
-    case sherpa = "sherpa_onnx_streaming"
-    case embedded = "funasr_embedded"
-    case external = "funasr_external"
-    case sidecar = "sidecar"
-    case container = "funasr_container"
+    case funasr = "funasr"
+    case onnx = "onnx"
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .sherpa:
-            return "Sherpa ONNX"
-        case .embedded:
-            return "Embedded Runtime"
-        case .external:
-            return "External FunASR"
-        case .sidecar:
-            return "Legacy Sidecar"
-        case .container:
-            return "Managed Docker"
+        case .funasr:
+            return "FunASR"
+        case .onnx:
+            return "ONNX"
         }
     }
 }
 
 enum ASRModeOption: String, CaseIterable, Identifiable {
-    case sherpa = "sherpa_onnx_streaming"
-    case embedded = "funasr_embedded"
-    case external = "funasr_external"
+    case funasr = "funasr"
+    case onnx = "onnx"
 
     var id: String { rawValue }
 
+    static func normalizedProvider(_ provider: String) -> String {
+        switch provider {
+        case "onnx", "sherpa", "sherpa_onnx_streaming":
+            return ASRModeOption.onnx.rawValue
+        case "funasr", "funasr_embedded", "funasr_external", "funasr_container", "sidecar":
+            return ASRModeOption.funasr.rawValue
+        default:
+            return ASRModeOption.funasr.rawValue
+        }
+    }
+
     var title: String {
         switch self {
-        case .sherpa:
-            return "Sherpa"
-        case .embedded:
-            return "Embedded"
-        case .external:
-            return "External"
+        case .funasr:
+            return "FunASR"
+        case .onnx:
+            return "ONNX"
         }
     }
 }
@@ -554,7 +552,7 @@ struct ControlConfig: Equatable {
         path: "",
         server: ControlServerConfig(bindHost: "127.0.0.1", port: 8080, serviceName: "Talka"),
         asr: ControlASRConfig(
-            provider: "sherpa_onnx_streaming",
+            provider: "onnx",
             runtimePath: "talka-asr-runtime",
             host: "127.0.0.1",
             port: 10095,
@@ -634,7 +632,7 @@ struct ControlASRConfig: Codable, Equatable {
         models: ControlASRModelsConfig,
         sherpaONNX: ControlSherpaONNXConfig = .default
     ) {
-        self.provider = provider
+        self.provider = ASRModeOption.normalizedProvider(provider)
         self.runtimePath = runtimePath
         self.host = host
         self.port = port
@@ -667,7 +665,7 @@ struct ControlASRConfig: Codable, Equatable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        provider = try container.decode(String.self, forKey: .provider)
+        provider = ASRModeOption.normalizedProvider(try container.decode(String.self, forKey: .provider))
         runtimePath = try container.decode(String.self, forKey: .runtimePath)
         host = try container.decode(String.self, forKey: .host)
         port = try container.decode(Int.self, forKey: .port)
@@ -1516,13 +1514,6 @@ struct TalkaMacApp: App {
                 }
         }
 
-        Window("Diagnostics", id: ShellWindowID.diagnostics) {
-            DiagnosticsView(viewModel: viewModel)
-                .frame(minWidth: ShellMetrics.minUtilityWidth, minHeight: ShellMetrics.minUtilityHeight)
-                .task {
-                    await viewModel.refreshIfNeeded()
-                }
-        }
     }
 }
 
@@ -1566,20 +1557,33 @@ struct MenuBarIconView: View {
 
 struct SettingsShellView: View {
     @ObservedObject var viewModel: AppShellViewModel
-    @Environment(\.openWindow) private var openWindow
+    @State private var selectedTab = SettingsTab.general
+
+    private enum SettingsTab: String {
+        case general
+        case diagnostics
+    }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: ShellMetrics.panelSpacing) {
-                SettingsStatusPINPanel(viewModel: viewModel)
-                SettingsInterfacesPanel(viewModel: viewModel)
-                SettingsDevicesPanel(viewModel: viewModel)
-                SettingsFooter(viewModel: viewModel) {
-                    openWindow(id: ShellWindowID.diagnostics)
+        VStack(spacing: 0) {
+            Picker("Settings Tab", selection: $selectedTab) {
+                Text("General").tag(SettingsTab.general)
+                Text("Diagnostics").tag(SettingsTab.diagnostics)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 260)
+            .padding(.top, ShellMetrics.contentPadding)
+            .padding(.horizontal, ShellMetrics.contentPadding)
+
+            Group {
+                switch selectedTab {
+                case .general:
+                    SettingsGeneralView(viewModel: viewModel)
+                case .diagnostics:
+                    DiagnosticsView(viewModel: viewModel)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(ShellMetrics.contentPadding)
         }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
             Task {
@@ -1593,6 +1597,31 @@ struct SettingsShellView: View {
         }
         .task {
             await viewModel.ensurePairingActive()
+        }
+        .onChange(of: selectedTab) { _, tab in
+            guard tab == .diagnostics else {
+                return
+            }
+            Task {
+                await viewModel.refreshDiagnostics()
+            }
+        }
+    }
+}
+
+struct SettingsGeneralView: View {
+    @ObservedObject var viewModel: AppShellViewModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: ShellMetrics.panelSpacing) {
+                SettingsStatusPINPanel(viewModel: viewModel)
+                SettingsInterfacesPanel(viewModel: viewModel)
+                SettingsDevicesPanel(viewModel: viewModel)
+                SettingsFooter(viewModel: viewModel)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(ShellMetrics.contentPadding)
         }
     }
 }
@@ -1661,10 +1690,6 @@ struct SettingsStatusPINPanel: View {
 struct SettingsInterfacesPanel: View {
     @ObservedObject var viewModel: AppShellViewModel
 
-    private var isExternalASR: Bool {
-        viewModel.config.asr.provider == ASRModeOption.external.rawValue
-    }
-
     private var aiHealth: (detail: String, tint: Color) {
         guard let ollama = viewModel.status?.ollama else {
             return ("Unknown", .secondary)
@@ -1680,7 +1705,7 @@ struct SettingsInterfacesPanel: View {
             return ("Unknown", .secondary)
         }
         if asr.ready {
-            return ("Healthy · \(viewModel.config.asr.host):\(viewModel.config.asr.port)", .green)
+            return ("Healthy · \(viewModel.config.asr.provider)", .green)
         }
         return (asr.error.map { "Error · \($0)" } ?? "Unavailable", .red)
     }
@@ -1690,7 +1715,7 @@ struct SettingsInterfacesPanel: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Interfaces")
                     .font(.headline)
-                Text("Configure AI cleanup and external ASR endpoints.")
+                Text("Configure AI cleanup and local ASR runtime.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1708,20 +1733,17 @@ struct SettingsInterfacesPanel: View {
                     )
                 }
                 GridRow {
-                    LabeledField(title: "ASR Endpoint", text: $viewModel.config.asr.host, isDisabled: !isExternalASR)
-                    LabeledField(
-                        title: "ASR Port",
-                        text: Binding(
-                            get: { String(viewModel.config.asr.port) },
-                            set: { viewModel.config.asr.port = Int($0) ?? viewModel.config.asr.port }
-                        ),
-                        isDisabled: !isExternalASR
-                    )
                     VStack(alignment: .leading, spacing: 6) {
                         Text("ASR Mode")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Picker("ASR Mode", selection: $viewModel.config.asr.provider) {
+                        Picker(
+                            "ASR Mode",
+                            selection: Binding(
+                                get: { ASRModeOption.normalizedProvider(viewModel.config.asr.provider) },
+                                set: { viewModel.config.asr.provider = ASRModeOption.normalizedProvider($0) }
+                            )
+                        ) {
                             ForEach(ASRModeOption.allCases) { option in
                                 Text(option.title).tag(option.rawValue)
                             }
@@ -1729,6 +1751,7 @@ struct SettingsInterfacesPanel: View {
                         .labelsHidden()
                         .pickerStyle(.menu)
                     }
+                    .gridCellColumns(3)
                 }
             }
 
@@ -1809,7 +1832,6 @@ struct SettingsDevicesPanel: View {
 
 struct SettingsFooter: View {
     @ObservedObject var viewModel: AppShellViewModel
-    var openDiagnostics: () -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -1821,7 +1843,6 @@ struct SettingsFooter: View {
 
             Spacer()
 
-            Button("Diagnostics", action: openDiagnostics)
             Button("Reset Changes") {
                 Task {
                     await viewModel.refresh()

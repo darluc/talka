@@ -17,9 +17,8 @@ The current settings screen is intentionally compact:
 - Top status area combines service state, Accessibility state, pairing PIN, and PIN countdown.
 - The `Service listening` pill can trigger service recovery or test the service path.
 - The Accessibility pill reflects native `AXIsProcessTrusted()` status and opens the permission flow.
-- `Interfaces` contains AI endpoint, AI model, timeout, ASR mode, and external ASR host/port.
-- ASR mode is a product-level choice: `Embedded` or `External`; it is separate from FunASR's internal `2pass` runtime mode.
-- ASR host and port are editable only when ASR mode is `External`.
+- `Interfaces` contains AI endpoint, AI model, timeout, and ASR mode.
+- ASR mode is a product-level choice: `FunASR` or `ONNX`; it is separate from FunASR's internal `2pass` runtime mode.
 - AI API and ASR API health are visible inline.
 - Connected devices appear at the bottom with device name and connection time.
 - Footer actions are limited to Diagnostics, Reset Changes, and Save.

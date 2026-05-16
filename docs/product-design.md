@@ -95,7 +95,6 @@ Settings layout:
   - AI model.
   - AI timeout.
   - ASR mode.
-  - External ASR endpoint and port.
 - AI API and ASR API health are shown inline in the interfaces section.
 - Connected devices show device name plus connection time. They do not show low-value actions such as `Forget` in the main compact view.
 - Footer contains Diagnostics, Reset Changes, Save, last update time, and config path.
@@ -105,11 +104,10 @@ Configuration:
 - AI endpoint: configurable Ollama/OpenAI-compatible endpoint.
 - AI model.
 - AI timeout.
-- ASR mode: `Embedded` or `External`.
-- ASR endpoint and port, editable only when ASR mode is `External`.
+- ASR mode: `FunASR` or `ONNX`.
 - Paired or connected device list.
 
-ASR mode is a product-level setting. It must not expose FunASR's internal runtime mode such as `2pass` as the user-facing ASR mode. `Embedded` means Talka launches the bundled runtime and bundled models; `External` means Talka connects to a separately managed local ASR service.
+ASR mode is a product-level setting. It must not expose FunASR's internal runtime mode such as `2pass` as the user-facing ASR mode. `FunASR` means Talka launches the bundled FunASR runtime and bundled models with streaming audio. `ONNX` means Talka uses the in-process sherpa-onnx streaming recognizer.
 
 Diagnostics layout:
 
@@ -202,8 +200,7 @@ Talka is local-first.
 
 - iOS sends audio only to paired Macs.
 - macOS accepts audio only from paired devices after encrypted session setup.
-- ASR runs locally through the app-bundled FunASR runtime by default.
-- Advanced deployments can point at a separately managed local FunASR runtime without changing the iOS client flow.
+- ASR runs locally through either the app-bundled FunASR runtime or the in-process ONNX recognizer.
 - LLM post-processing defaults to local Ollama.
 - No telemetry is required for MVP.
 - Debug logs must not store raw audio or full transcripts unless the user explicitly enables diagnostic capture.
@@ -223,8 +220,8 @@ Talka is local-first.
 - iOS can discover and pair with macOS on the same network.
 - PIN pairing blocks unauthorized devices.
 - Audio can stream from iOS to macOS.
-- The embedded FunASR runtime can produce Chinese transcription from live speech.
-- The macOS app can also be reconfigured to use an external FunASR runtime or legacy sidecar without changing the pairing flow.
+- The embedded FunASR runtime can produce streaming Chinese transcription from live speech.
+- The macOS app can switch between FunASR and ONNX ASR without changing the pairing flow.
 - Ollama can clean the recognized text.
 - macOS can paste the final text into common apps such as Notes, Safari text fields, WeChat, and VS Code.
 - The user can configure Ollama URL and model.

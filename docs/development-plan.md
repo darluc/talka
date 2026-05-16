@@ -220,8 +220,8 @@ Tasks:
 - Add compact macOS settings window.
 - Combine service state, Accessibility state, PIN, and countdown in the top status area.
 - Configure AI endpoint, AI model, and AI timeout.
-- Configure user-facing ASR mode as `Embedded` or `External`.
-- Enable ASR host and port editing only in `External` mode.
+- Configure user-facing ASR mode as `FunASR` or `ONNX`.
+- Keep ASR local-only in the settings UI; do not expose external ASR endpoint controls.
 - Show AI API and ASR API health inline.
 - Show connected devices at the bottom with name and connection time.
 - Move diagnostics into a separate window focused on failure evidence, runtime evidence, and recovery.

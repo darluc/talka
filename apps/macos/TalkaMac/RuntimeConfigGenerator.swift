@@ -29,7 +29,7 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
 
 			yaml = removeMalformedEmbeddedResourceLines(from: yaml)
 			yaml = removeDuplicatedEmbeddedASRProvider(from: yaml)
-            yaml = replaceASRBlock(in: yaml, resourcesURL: resourcesURL)
+            yaml = replaceASRBlock(in: yaml, resourcesURL: resourcesURL, preservingProviderFrom: originalYAML)
 
         if yaml != originalYAML {
             try yaml.write(to: configURL, atomically: true, encoding: .utf8)
@@ -38,11 +38,14 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
 
 	private func isEmbeddedResourceConfig(_ yaml: String) -> Bool {
 		yaml.contains("provider: funasr_embedded")
+		|| yaml.contains("provider: funasr")
+		|| yaml.contains("provider: funasr_external")
 		|| yaml.contains("provider: funasr_onnx")
 		|| yaml.contains("talka-asr-runtime")
 		|| yaml.contains("funasr-wss-server-2pass")
 		|| yaml.contains("/models/funasr/")
 		|| yaml.contains("provider: sherpa_onnx_streaming")
+		|| yaml.contains("provider: onnx")
 		|| yaml.contains("/models/sherpa-onnx/")
 	}
 
@@ -56,7 +59,7 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
 
     private func removeDuplicatedEmbeddedASRProvider(from yaml: String) -> String {
         yaml.replacingOccurrences(
-            of: #"(?m)^  provider: funasr_embedded\n(?=    provider: funasr_embedded$)"#,
+            of: #"(?m)^  provider: (?:funasr|funasr_embedded)\n(?=    provider: (?:funasr|funasr_embedded)$)"#,
             with: "",
             options: .regularExpression
         )
@@ -69,13 +72,13 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
 
         return yaml.replacingOccurrences(
             of: #"(?m)^asr:\n"#,
-            with: "asr:\n  provider: funasr_embedded\n",
+            with: "asr:\n  provider: funasr\n",
             options: .regularExpression
         )
     }
 
-    private func replaceASRBlock(in yaml: String, resourcesURL: URL) -> String {
-        let block = defaultASRYAML(resourcesURL: resourcesURL)
+    private func replaceASRBlock(in yaml: String, resourcesURL: URL, preservingProviderFrom originalYAML: String? = nil) -> String {
+        let block = defaultASRYAML(resourcesURL: resourcesURL, preferredProvider: preferredASRProvider(in: originalYAML ?? yaml))
         if yaml.range(of: #"(?ms)^asr:\n.*?(?=^llm:\n)"#, options: .regularExpression) != nil {
             return yaml.replacingOccurrences(
                 of: #"(?ms)^asr:\n.*?(?=^llm:\n)"#,
@@ -165,11 +168,22 @@ logging:
 """
 	}
 
-    private func defaultASRYAML(resourcesURL: URL) -> String {
-        if let sherpaModel = availableSherpaModel(resourcesURL: resourcesURL) {
+    private func defaultASRYAML(resourcesURL: URL, preferredProvider: String? = nil) -> String {
+        let provider = preferredProvider ?? "auto"
+        if provider != "funasr", let sherpaModel = availableSherpaModel(resourcesURL: resourcesURL) {
             return sherpaASRYAML(resourcesURL: resourcesURL, model: sherpaModel)
         }
         return funasrASRYAML(resourcesURL: resourcesURL)
+    }
+
+    private func preferredASRProvider(in yaml: String) -> String? {
+        if yaml.range(of: #"(?m)^\s*provider:\s*(funasr|funasr_embedded|funasr_external|funasr_container|sidecar)\s*$"#, options: .regularExpression) != nil {
+            return "funasr"
+        }
+        if yaml.range(of: #"(?m)^\s*provider:\s*(onnx|sherpa|sherpa_onnx_streaming)\s*$"#, options: .regularExpression) != nil {
+            return "onnx"
+        }
+        return nil
     }
 
     private struct SherpaModelBundle {
@@ -228,7 +242,7 @@ logging:
 
         return """
 asr:
-  provider: sherpa_onnx_streaming
+  provider: onnx
   runtime_path: \(runtimeURL.path)
   funasr_binary_path: \(funasrBinaryURL.path)
   host: 127.0.0.1
@@ -269,7 +283,7 @@ asr:
 
         return """
 asr:
-  provider: funasr_embedded
+  provider: funasr
   runtime_path: \(runtimeURL.path)
   funasr_binary_path: \(funasrBinaryURL.path)
   host: 127.0.0.1

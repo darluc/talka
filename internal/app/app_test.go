@@ -55,8 +55,8 @@ func TestStatusEndpointReturnsTypedJSON(t *testing.T) {
 	if payload.DeviceCount != 0 {
 		t.Fatalf("DeviceCount = %d, want 0", payload.DeviceCount)
 	}
-	if payload.ASR.Provider != "funasr_embedded" || payload.ASR.SampleRate != 16000 {
-		t.Fatalf("ASR status = %+v, want provider funasr_embedded and sample_rate 16000", payload.ASR)
+	if payload.ASR.Provider != "funasr" || payload.ASR.SampleRate != 16000 {
+		t.Fatalf("ASR status = %+v, want provider funasr and sample_rate 16000", payload.ASR)
 	}
 	if !payload.ASR.Ready || payload.ASR.Error != "" {
 		t.Fatalf("ASR readiness = ready:%v error:%q, want ready", payload.ASR.Ready, payload.ASR.Error)
@@ -849,8 +849,8 @@ func TestNewConfiguresProductionPipeline(t *testing.T) {
 
 func TestMustConfigUsesEmbeddedProvider(t *testing.T) {
 	cfg, _ := mustConfig(t)
-	if cfg.ASR.Provider != "funasr_embedded" {
-		t.Fatalf("ASR.Provider = %q, want funasr_embedded", cfg.ASR.Provider)
+	if cfg.ASR.Provider != "funasr" {
+		t.Fatalf("ASR.Provider = %q, want funasr", cfg.ASR.Provider)
 	}
 	if cfg.ASR.RuntimePath == "" {
 		t.Fatal("ASR.RuntimePath is empty")
@@ -906,7 +906,7 @@ func mustConfig(t *testing.T) (config.Config, string) {
   port: 0
   service_name: Talka
 asr:
-  provider: funasr_embedded
+  provider: funasr
   runtime_path: talka-asr-runtime
   host: 127.0.0.1
   port: 10095

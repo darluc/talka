@@ -87,7 +87,7 @@ func Default() Config {
 			ServiceName: "Talka",
 		},
 		ASR: ASRConfig{
-			Provider:         "funasr_embedded",
+			Provider:         "funasr",
 			RuntimePath:      "talka-asr-runtime",
 			FunASRBinaryPath: "funasr-wss-server-2pass",
 			Host:             "127.0.0.1",

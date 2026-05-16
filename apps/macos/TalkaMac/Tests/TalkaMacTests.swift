@@ -69,6 +69,50 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertEqual(viewModel.latestLatencyTrace?.totalAfterStopMS, 557)
     }
 
+    func testASRModeOptionsExposeOnlyFunASRAndONNX() {
+        XCTAssertEqual(ASRModeOption.allCases.map(\.rawValue), ["funasr", "onnx"])
+        XCTAssertEqual(ASRModeOption.allCases.map(\.title), ["FunASR", "ONNX"])
+    }
+
+    func testASRModeNormalizesLegacyProviders() {
+        XCTAssertEqual(ASRModeOption.normalizedProvider("sherpa_onnx_streaming"), "onnx")
+        XCTAssertEqual(ASRModeOption.normalizedProvider("sherpa"), "onnx")
+        XCTAssertEqual(ASRModeOption.normalizedProvider("funasr_embedded"), "funasr")
+        XCTAssertEqual(ASRModeOption.normalizedProvider("funasr_external"), "funasr")
+        XCTAssertEqual(ASRModeOption.normalizedProvider("sidecar"), "funasr")
+    }
+
+    func testControlASRConfigDecodesLegacyProviderAsSupportedMode() throws {
+        let decoder = JSONDecoder()
+        let body = #"""
+        {
+          "provider": "sherpa_onnx_streaming",
+          "runtime_path": "talka-asr-runtime",
+          "host": "127.0.0.1",
+          "port": 10095,
+          "mode": "streaming",
+          "sample_rate": 16000,
+          "startup_timeout_seconds": 180,
+          "container_image": "",
+          "container_name": "",
+          "download_dir": "",
+          "hotword_path": "",
+          "models": {
+            "asr": "models/funasr/paraformer-zh-onnx",
+            "online": "models/funasr/paraformer-zh-online-onnx",
+            "vad": "models/funasr/fsmn-vad-onnx",
+            "punc": "models/funasr/ct-punc-onnx",
+            "itn": "models/funasr/itn-zh",
+            "lm": ""
+          }
+        }
+        """#.data(using: .utf8)!
+
+        let config = try decoder.decode(ControlASRConfig.self, from: body)
+
+        XCTAssertEqual(config.provider, "onnx")
+    }
+
     func testRefreshShowsServiceUnavailableAndRecoveryCanRecover() async {
         let client = FakeControlAPIClient(
             statusResults: [
@@ -273,7 +317,7 @@ final class TalkaMacTests: XCTestCase {
     func testOverallHealthRequiresServiceAIAndASRReady() async {
         let healthy = ControlStatus.fixture(
             state: "running",
-            asr: ControlASRStatus(provider: "funasr_embedded", runtimePath: "", sampleRate: 16000, mode: "2pass", ready: true, error: nil),
+            asr: ControlASRStatus(provider: "funasr", runtimePath: "", sampleRate: 16000, mode: "2pass", ready: true, error: nil),
             ollama: ControlOllamaStatus(baseURL: "http://localhost:11434", model: "qwen3:8b", timeoutSeconds: 30, ready: true, error: nil)
         )
         let unhealthyAI = ControlStatus.fixture(
@@ -491,7 +535,7 @@ final class TalkaMacTests: XCTestCase {
               "service_name": "Talka"
             },
             "asr": {
-              "provider": "funasr_embedded",
+              "provider": "funasr",
               "runtime_path": "talka-asr-runtime",
               "host": "127.0.0.1",
               "port": 10095,
@@ -553,7 +597,7 @@ final class TalkaMacTests: XCTestCase {
               "service_name": "Talka"
             },
             "asr": {
-              "provider": "funasr_embedded",
+              "provider": "funasr",
               "runtime_path": "talka-asr-runtime",
               "host": "127.0.0.1",
               "port": 10095,
@@ -776,8 +820,8 @@ final class TalkaMacTests: XCTestCase {
         let secondURL = try generator.generateConfig()
         XCTAssertEqual(secondURL, configURL)
         let contents = try String(contentsOf: configURL, encoding: .utf8)
-        XCTAssertTrue(contents.contains("provider: funasr_external"))
-        XCTAssertFalse(contents.contains("provider: funasr_embedded"))
+        XCTAssertTrue(contents.contains("provider: funasr"))
+        XCTAssertFalse(contents.contains("provider: funasr_external"))
     }
 
     func testDiagnosticsViewDoesNotRenderRecoverySection() throws {
@@ -796,6 +840,36 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertFalse(diagnosticsSource.contains(#"DiagnosticSection(title: "Recovery")"#))
     }
 
+    func testSettingsShellContainsGeneralAndDiagnosticsTabs() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("TalkaMacApp.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        guard let settingsRange = source.range(of: "struct SettingsShellView: View"),
+              let nextRange = source.range(of: "struct SettingsGeneralView: View") else {
+            XCTFail("Could not locate SettingsShellView source boundaries.")
+            return
+        }
+
+        let settingsSource = source[settingsRange.lowerBound..<nextRange.lowerBound]
+        XCTAssertTrue(settingsSource.contains(#"Text("General").tag(SettingsTab.general)"#))
+        XCTAssertTrue(settingsSource.contains(#"Text("Diagnostics").tag(SettingsTab.diagnostics)"#))
+        XCTAssertTrue(settingsSource.contains("DiagnosticsView(viewModel: viewModel)"))
+    }
+
+    func testDiagnosticsWindowIsNotExposedSeparately() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("TalkaMacApp.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertFalse(source.contains(#"Window("Diagnostics""#))
+        XCTAssertFalse(source.contains(#"static let diagnostics = "diagnostics""#))
+        XCTAssertFalse(source.contains(#"Button("Diagnostics""#))
+    }
+
     func testRuntimeConfigGeneratorRefreshesStaleEmbeddedResourcePaths() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let resourcesDir = tempDir.appendingPathComponent("resources", isDirectory: true)
@@ -812,7 +886,7 @@ final class TalkaMacTests: XCTestCase {
           service_name: Talka
 
         asr:
-          provider: funasr_embedded
+          provider: funasr
           runtime_path: /Applications/TalkaMac.app/Contents/Resources/talka-asr-runtime
           host: 127.0.0.1
           port: 10095
@@ -850,7 +924,7 @@ final class TalkaMacTests: XCTestCase {
 
         XCTAssertEqual(generatedURL, configURL)
         let contents = try String(contentsOf: configURL, encoding: .utf8)
-        XCTAssertTrue(contents.contains("asr:\n  provider: funasr_embedded"))
+        XCTAssertTrue(contents.contains("asr:\n  provider: funasr"))
         XCTAssertTrue(contents.contains("runtime_path: \(resourcesDir.appendingPathComponent("talka-asr-runtime").path)"))
         XCTAssertTrue(contents.contains("hotword_path: \"\""))
         XCTAssertTrue(contents.contains("    asr: \(modelsDir.appendingPathComponent("paraformer-zh-onnx").path)"))
@@ -876,7 +950,7 @@ final class TalkaMacTests: XCTestCase {
         _ = try EmbeddedRuntimeConfigGenerator().generateConfig()
 
         let contents = try String(contentsOf: configURL, encoding: .utf8)
-        XCTAssertTrue(contents.contains("asr:\n  provider: sherpa_onnx_streaming"))
+        XCTAssertTrue(contents.contains("asr:\n  provider: onnx"))
         XCTAssertTrue(contents.contains("model_type: paraformer"))
         XCTAssertTrue(contents.contains("precision: int8"))
         XCTAssertTrue(contents.contains("tokens_path: \(sherpaDir.appendingPathComponent("tokens.txt").path)"))
@@ -897,7 +971,7 @@ final class TalkaMacTests: XCTestCase {
             port: 8080
             service_name: Talka
         asr:
-            provider: funasr_embedded
+            provider: funasr
             runtime_path: /Applications/TalkaMac.app/Contents/Resources/talka-asr-runtime
             funasr_binary_path: ""
             host: 127.0.0.1
@@ -934,8 +1008,8 @@ final class TalkaMacTests: XCTestCase {
         _ = try EmbeddedRuntimeConfigGenerator().generateConfig()
 
         let contents = try String(contentsOf: configURL, encoding: .utf8)
-        XCTAssertFalse(contents.contains("asr:\n  provider: funasr_embedded\n    provider: funasr_embedded"))
-        XCTAssertEqual(contents.components(separatedBy: "provider: funasr_embedded").count - 1, 1)
+        XCTAssertFalse(contents.contains("asr:\n  provider: funasr\n    provider: funasr"))
+        XCTAssertEqual(contents.components(separatedBy: "provider: funasr").count - 1, 1)
         XCTAssertTrue(contents.contains("runtime_path: \(resourcesDir.appendingPathComponent("talka-asr-runtime").path)"))
         XCTAssertTrue(contents.contains("model: custom-model"))
     }
@@ -954,8 +1028,8 @@ final class TalkaMacTests: XCTestCase {
             port: 8080
             service_name: Talka
         asr:
-          provider: funasr_embedded
-            provider: funasr_embedded
+          provider: funasr
+            provider: funasr
             runtime_path: /Applications/TalkaMac.app/Contents/Resources/talka-asr-runtime
             host: 127.0.0.1
             port: 10095
@@ -981,8 +1055,8 @@ final class TalkaMacTests: XCTestCase {
         _ = try EmbeddedRuntimeConfigGenerator().generateConfig()
 
         let contents = try String(contentsOf: configURL, encoding: .utf8)
-        XCTAssertFalse(contents.contains("asr:\n  provider: funasr_embedded\n    provider: funasr_embedded"))
-        XCTAssertEqual(contents.components(separatedBy: "provider: funasr_embedded").count - 1, 1)
+        XCTAssertFalse(contents.contains("asr:\n  provider: funasr\n    provider: funasr"))
+        XCTAssertEqual(contents.components(separatedBy: "provider: funasr").count - 1, 1)
         XCTAssertTrue(contents.contains("runtime_path: \(resourcesDir.appendingPathComponent("talka-asr-runtime").path)"))
     }
 
@@ -1002,7 +1076,7 @@ final class TalkaMacTests: XCTestCase {
 
         asr:
           /Applications/TalkaMac.app/Contents/Resources/models/funasr/paraformer-zh-onnx
-          provider: funasr_embedded
+          provider: funasr
           runtime_path: /Applications/TalkaMac.app/Contents/Resources/talka-asr-runtime
           host: 127.0.0.1
           port: 10095
@@ -1033,7 +1107,7 @@ final class TalkaMacTests: XCTestCase {
 
         let contents = try String(contentsOf: configURL, encoding: .utf8)
         XCTAssertFalse(contents.contains("  /Applications/TalkaMac.app/Contents/Resources/models/funasr/paraformer-zh-onnx"))
-        XCTAssertTrue(contents.contains("asr:\n  provider: funasr_embedded"))
+        XCTAssertTrue(contents.contains("asr:\n  provider: funasr"))
         XCTAssertTrue(contents.contains("hotword_path: \"\""))
     }
 
@@ -1081,7 +1155,7 @@ final class TalkaMacTests: XCTestCase {
         _ = try EmbeddedRuntimeConfigGenerator().generateConfig()
 
         let contents = try String(contentsOf: configURL, encoding: .utf8)
-        XCTAssertTrue(contents.contains("asr:\n  provider: funasr_embedded\n  runtime_path: \(resourcesDir.appendingPathComponent("talka-asr-runtime").path)"))
+        XCTAssertTrue(contents.contains("asr:\n  provider: funasr\n  runtime_path: \(resourcesDir.appendingPathComponent("talka-asr-runtime").path)"))
     }
 
     private func makeLiveClient(handler: @escaping @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)) -> LiveControlAPIClient {
@@ -1319,7 +1393,7 @@ private extension ControlConfig {
             path: "/tmp/talka.yaml",
             server: ControlServerConfig(bindHost: "127.0.0.1", port: 8080, serviceName: "Talka"),
             asr: ControlASRConfig(
-                provider: "funasr_embedded",
+                provider: "funasr",
                 runtimePath: "talka-asr-runtime",
                 host: "127.0.0.1",
                 port: 10095,

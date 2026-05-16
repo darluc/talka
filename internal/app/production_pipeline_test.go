@@ -45,6 +45,46 @@ func TestNewASRProviderFromConfigBuildsEmbeddedFunASRProvider(t *testing.T) {
 	if !managed.ManagerAlwaysEphemeral() {
 		t.Fatal("ManagerAlwaysEphemeral() = false, want true for funasr_embedded")
 	}
+	if _, ok := provider.(asr.StreamingProvider); !ok {
+		t.Fatalf("provider type = %T, want streaming FunASR provider", provider)
+	}
+}
+
+func TestNewASRProviderFromConfigBuildsFunASRAliasAsStreamingEmbeddedProvider(t *testing.T) {
+	root := t.TempDir()
+	runtimePath := mustExecutablePath(t, root, "runtime/talka-asr-runtime")
+	cfg := config.ASRConfig{
+		Provider:       "funasr",
+		RuntimePath:    runtimePath,
+		Host:           "127.0.0.1",
+		Port:           10095,
+		Mode:           "2pass",
+		SampleRate:     16000,
+		StartupTimeout: 180,
+		Models: config.ASRModelsConfig{
+			ASR:    mustPath(t, root, "models/asr"),
+			Online: mustPath(t, root, "models/online"),
+			VAD:    mustPath(t, root, "models/vad"),
+			Punc:   mustPath(t, root, "models/punc"),
+			ITN:    mustPath(t, root, "models/itn"),
+		},
+	}
+
+	provider, err := newASRProviderFromConfig(cfg, root)
+	if err != nil {
+		t.Fatalf("newASRProviderFromConfig() error = %v", err)
+	}
+
+	managed, ok := provider.(*asr.ManagedSidecarProvider)
+	if !ok {
+		t.Fatalf("provider type = %T, want *asr.ManagedSidecarProvider", provider)
+	}
+	if !managed.ManagerAlwaysEphemeral() {
+		t.Fatal("ManagerAlwaysEphemeral() = false, want true for funasr")
+	}
+	if _, ok := provider.(asr.StreamingProvider); !ok {
+		t.Fatalf("provider type = %T, want streaming FunASR provider", provider)
+	}
 }
 
 func TestNewASRProviderFromConfigBuildsExternalFunASRProvider(t *testing.T) {

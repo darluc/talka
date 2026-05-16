@@ -47,6 +47,46 @@ func TestClientTranscribeReturnsDeterministicTranscript(t *testing.T) {
 	}
 }
 
+func TestClientStreamFeedsFramesIncrementally(t *testing.T) {
+	runtime := &FakeRuntime{Ready: true}
+	serverURL, shutdown := startFakeRuntimeServer(t, runtime)
+	defer shutdown()
+
+	client := NewClient(Config{URL: serverURL, Version: protocol.VersionV1Alpha1, Timeout: 2 * time.Second})
+	stream, err := client.NewStream(context.Background(), DefaultAudioMetadata())
+	if err != nil {
+		t.Fatalf("NewStream() error = %v", err)
+	}
+	defer stream.Close(context.Background())
+
+	first, err := stream.AcceptFrame(context.Background(), 0, make([]byte, DefaultFrameSize))
+	if err != nil {
+		t.Fatalf("AcceptFrame(first) error = %v", err)
+	}
+	if got, want := len(first.Partials), 1; got != want {
+		t.Fatalf("len(first.Partials) = %d, want %d", got, want)
+	}
+	if got, want := first.Partials[0].Text, "你好"; got != want {
+		t.Fatalf("first partial = %q, want %q", got, want)
+	}
+
+	second, err := stream.AcceptFrame(context.Background(), 0, make([]byte, DefaultFrameSize))
+	if err != nil {
+		t.Fatalf("AcceptFrame(second) error = %v", err)
+	}
+	if got, want := len(second.Partials), 2; got != want {
+		t.Fatalf("len(second.Partials) = %d, want %d", got, want)
+	}
+
+	final, err := stream.Finish(context.Background())
+	if err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+	if got, want := final.TextFinal.Text, "你好，世界"; got != want {
+		t.Fatalf("TextFinal.Text = %q, want %q", got, want)
+	}
+}
+
 func TestClientTranscribeRejectsUnsupportedEncoding(t *testing.T) {
 	runtime := &FakeRuntime{Ready: true}
 	serverURL, shutdown := startFakeRuntimeServer(t, runtime)

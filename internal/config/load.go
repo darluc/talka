@@ -101,7 +101,7 @@ func (cfg Config) Validate(baseDir string) error {
 		appendIssue("server.service_name", cfg.Server.ServiceName, "must not be empty")
 	}
 
-	asrProvider := strings.ToLower(strings.TrimSpace(cfg.ASR.Provider))
+	asrProvider := normalizeASRProvider(cfg.ASR.Provider)
 	if asrProvider == "" {
 		appendIssue("asr.provider", cfg.ASR.Provider, "must not be empty")
 	}
@@ -121,11 +121,6 @@ func (cfg Config) Validate(baseDir string) error {
 		appendIssue("asr.startup_timeout_seconds", fmt.Sprintf("%d", cfg.ASR.StartupTimeout), "must be greater than zero")
 	}
 
-	validateNonEmpty := func(field, value string) {
-		if strings.TrimSpace(value) == "" {
-			appendIssue(field, value, "must not be empty")
-		}
-	}
 	validatePath := func(field, value string) {
 		if strings.TrimSpace(value) == "" {
 			appendIssue(field, value, "must not be empty")
@@ -137,7 +132,7 @@ func (cfg Config) Validate(baseDir string) error {
 	}
 
 	switch asrProvider {
-	case "funasr_embedded", "funasr_onnx", "":
+	case "funasr", "funasr_onnx", "":
 		if strings.TrimSpace(cfg.ASR.RuntimePath) == "" {
 			appendIssue("asr.runtime_path", cfg.ASR.RuntimePath, "must not be empty")
 		} else if err := mustExist(baseDir, cfg.ASR.RuntimePath); err != nil {
@@ -154,26 +149,7 @@ func (cfg Config) Validate(baseDir string) error {
 		if strings.TrimSpace(cfg.ASR.HotwordPath) != "" {
 			validatePath("asr.hotword_path", cfg.ASR.HotwordPath)
 		}
-	case "funasr_external":
-		// External upstream runtimes own their model and binary lifecycle.
-	case "funasr_container":
-		validateNonEmpty("asr.container_image", cfg.ASR.ContainerImage)
-		validateNonEmpty("asr.container_name", cfg.ASR.ContainerName)
-		validateNonEmpty("asr.download_dir", cfg.ASR.DownloadDir)
-		validateNonEmpty("asr.models.asr", cfg.ASR.Models.ASR)
-		validateNonEmpty("asr.models.online", cfg.ASR.Models.Online)
-		validateNonEmpty("asr.models.vad", cfg.ASR.Models.VAD)
-		validateNonEmpty("asr.models.punc", cfg.ASR.Models.Punc)
-		validateNonEmpty("asr.models.itn", cfg.ASR.Models.ITN)
-		if strings.TrimSpace(cfg.ASR.Models.LM) != "" {
-			validateNonEmpty("asr.models.lm", cfg.ASR.Models.LM)
-		}
-		if strings.TrimSpace(cfg.ASR.HotwordPath) != "" {
-			validateNonEmpty("asr.hotword_path", cfg.ASR.HotwordPath)
-		}
-	case "sidecar":
-	// Legacy Talka proxy sidecar only needs host/port validation above.
-	case "sherpa_onnx_streaming":
+	case "onnx":
 		modelType := strings.TrimSpace(cfg.ASR.SherpaONNX.ModelType)
 		if modelType == "" {
 			if strings.TrimSpace(cfg.ASR.SherpaONNX.JoinerPath) != "" {
@@ -210,7 +186,7 @@ func (cfg Config) Validate(baseDir string) error {
 			appendIssue("asr.sherpa_onnx.provider", cfg.ASR.SherpaONNX.Provider, "must not be empty")
 		}
 	default:
-		appendIssue("asr.provider", cfg.ASR.Provider, "must be one of funasr_embedded, funasr_external, funasr_container, sidecar, sherpa_onnx_streaming")
+		appendIssue("asr.provider", cfg.ASR.Provider, "must be one of funasr, onnx")
 	}
 
 	if strings.TrimSpace(cfg.LLM.Provider) == "" {
@@ -240,6 +216,17 @@ func (cfg Config) Validate(baseDir string) error {
 		return ValidationError{Issues: issues}
 	}
 	return nil
+}
+
+func normalizeASRProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "", "funasr", "funasr_embedded":
+		return "funasr"
+	case "onnx", "sherpa", "sherpa_onnx_streaming":
+		return "onnx"
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
+	}
 }
 
 func mustExist(baseDir, value string) error {

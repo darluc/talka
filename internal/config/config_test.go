@@ -27,8 +27,8 @@ func TestDefaultConfigMatchesScaffoldConstraints(t *testing.T) {
 		t.Fatalf("Server.ServiceName = %q, want %q", cfg.Server.ServiceName, "Talka")
 	}
 
-	if cfg.ASR.Provider != "funasr_embedded" {
-		t.Fatalf("ASR.Provider = %q, want %q", cfg.ASR.Provider, "funasr_embedded")
+	if cfg.ASR.Provider != "funasr" {
+		t.Fatalf("ASR.Provider = %q, want %q", cfg.ASR.Provider, "funasr")
 	}
 
 	if cfg.ASR.SampleRate != 16000 {
@@ -155,7 +155,7 @@ func TestLoadRejectsMissingEmbeddedOnlineModel(t *testing.T) {
 	}
 }
 
-func TestLoadAllowsExternalFunASRWithoutLocalRuntimeAssets(t *testing.T) {
+func TestLoadRejectsExternalFunASRProvider(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
   provider: funasr_external
@@ -166,13 +166,12 @@ func TestLoadAllowsExternalFunASRWithoutLocalRuntimeAssets(t *testing.T) {
   startup_timeout_seconds: 180
 `))
 
-	cfg, err := Load(configPath)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("Load() error = nil, want unsupported provider error")
 	}
-
-	if cfg.ASR.Provider != "funasr_external" {
-		t.Fatalf("ASR.Provider = %q, want %q", cfg.ASR.Provider, "funasr_external")
+	if got := err.Error(); got == "" || !containsAll(got, []string{"asr.provider", "must be one of funasr, onnx"}) {
+		t.Fatalf("Load() error = %q, want actionable provider error", got)
 	}
 }
 
@@ -186,7 +185,7 @@ func TestLoadAcceptsSherpaONNXStreamingConfig(t *testing.T) {
 	}
 
 	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
-  provider: sherpa_onnx_streaming
+  provider: onnx
   host: 127.0.0.1
   port: 10095
   mode: streaming
@@ -208,8 +207,8 @@ func TestLoadAcceptsSherpaONNXStreamingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if cfg.ASR.Provider != "sherpa_onnx_streaming" {
-		t.Fatalf("ASR.Provider = %q, want sherpa_onnx_streaming", cfg.ASR.Provider)
+	if cfg.ASR.Provider != "onnx" {
+		t.Fatalf("ASR.Provider = %q, want onnx", cfg.ASR.Provider)
 	}
 	if cfg.ASR.SherpaONNX.TokensPath != "models/sherpa/tokens.txt" {
 		t.Fatalf("TokensPath = %q, want configured path", cfg.ASR.SherpaONNX.TokensPath)
@@ -232,7 +231,7 @@ func TestLoadAcceptsSherpaONNXFP32Precision(t *testing.T) {
 	}
 
 	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
-  provider: sherpa_onnx_streaming
+  provider: onnx
   host: 127.0.0.1
   port: 10095
   mode: streaming
@@ -270,7 +269,7 @@ func TestLoadRejectsInvalidSherpaONNXPrecision(t *testing.T) {
 	}
 
 	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
-  provider: sherpa_onnx_streaming
+  provider: onnx
   host: 127.0.0.1
   port: 10095
   mode: streaming
@@ -301,7 +300,7 @@ func TestLoadRejectsInvalidSherpaONNXPrecision(t *testing.T) {
 func TestLoadRejectsMissingSherpaONNXModelFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
-  provider: sherpa_onnx_streaming
+  provider: onnx
   host: 127.0.0.1
   port: 10095
   mode: streaming

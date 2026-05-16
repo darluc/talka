@@ -83,6 +83,42 @@ func (p *SidecarProvider) Transcribe(ctx context.Context, request Request) (Resu
 		return Result{}, err
 	}
 
+	return resultFromStreamResult(stream), nil
+}
+
+func (p *SidecarProvider) NewStream(ctx context.Context, metadata protocol.AudioMetadata) (StreamingSession, error) {
+	stream, err := p.client.NewStream(ctx, metadata)
+	if err != nil {
+		return nil, err
+	}
+	return &sidecarStreamingSession{stream: stream}, nil
+}
+
+type sidecarStreamingSession struct {
+	stream *ClientStream
+}
+
+func (s *sidecarStreamingSession) AcceptFrame(ctx context.Context, frame []byte) (Result, error) {
+	streamResult, err := s.stream.AcceptFrame(ctx, 0, frame)
+	if err != nil {
+		return Result{}, err
+	}
+	return resultFromStreamResult(streamResult), nil
+}
+
+func (s *sidecarStreamingSession) Finish(ctx context.Context) (Result, error) {
+	streamResult, err := s.stream.Finish(ctx)
+	if err != nil {
+		return Result{}, err
+	}
+	return resultFromStreamResult(streamResult), nil
+}
+
+func (s *sidecarStreamingSession) Close(ctx context.Context) error {
+	return s.stream.Close(ctx)
+}
+
+func resultFromStreamResult(stream StreamResult) Result {
 	transcript := joinFinalSegments(stream.Finals)
 	if transcript == "" {
 		transcript = strings.TrimSpace(stream.TextFinal.Text)
@@ -92,7 +128,7 @@ func (p *SidecarProvider) Transcribe(ctx context.Context, request Request) (Resu
 		Partials:      append([]protocol.ASRPartial(nil), stream.Partials...),
 		FinalSegments: append([]protocol.ASRFinal(nil), stream.Finals...),
 		Transcript:    transcript,
-	}, nil
+	}
 }
 
 func (p *SidecarProvider) HealthCheck(ctx context.Context) error {
@@ -104,6 +140,13 @@ func (p *ManagedSidecarProvider) Transcribe(ctx context.Context, request Request
 		return Result{}, err
 	}
 	return NewSidecarProvider(p.runtimeConfig()).Transcribe(ctx, request)
+}
+
+func (p *ManagedSidecarProvider) NewStream(ctx context.Context, metadata protocol.AudioMetadata) (StreamingSession, error) {
+	if err := p.EnsureReady(ctx); err != nil {
+		return nil, err
+	}
+	return NewSidecarProvider(p.runtimeConfig()).NewStream(ctx, metadata)
 }
 
 func (p *ManagedSidecarProvider) EnsureReady(ctx context.Context) error {

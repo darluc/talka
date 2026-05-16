@@ -9,12 +9,12 @@ import (
 )
 
 const (
-	DefaultURL         = "ws://127.0.0.1:19080/ws"
-	defaultSessionID   = "session-1"
-	defaultStreamID    = "stream-1"
-	quietReadWindow    = 20 * time.Millisecond
-	defaultClientName  = "talka-go"
-	defaultTimeout     = 2 * time.Second
+	DefaultURL        = "ws://127.0.0.1:19080/ws"
+	defaultSessionID  = "session-1"
+	defaultStreamID   = "stream-1"
+	quietReadWindow   = 20 * time.Millisecond
+	defaultClientName = "talka-go"
+	defaultTimeout    = 2 * time.Second
 )
 
 type Config struct {
@@ -31,6 +31,15 @@ type StreamResult struct {
 	Partials  []protocol.ASRPartial
 	Finals    []protocol.ASRFinal
 	TextFinal protocol.TextFinal
+}
+
+type ClientStream struct {
+	client   *Client
+	conn     *websocketConn
+	result   StreamResult
+	metadata protocol.AudioMetadata
+	sequence int
+	closed   bool
 }
 
 func NewClient(config Config) *Client {
@@ -77,61 +86,106 @@ func (c *Client) HealthCheck(ctx context.Context) error {
 }
 
 func (c *Client) Transcribe(ctx context.Context, metadata protocol.AudioMetadata, frames [][]byte) (StreamResult, error) {
+	stream, err := c.NewStream(ctx, metadata)
+	if err != nil {
+		return StreamResult{}, err
+	}
+	defer stream.Close(ctx)
+
+	for index, frame := range frames {
+		if _, err := stream.AcceptFrame(ctx, index+1, frame); err != nil {
+			return StreamResult{}, err
+		}
+	}
+
+	return stream.Finish(ctx)
+}
+
+func (c *Client) NewStream(ctx context.Context, metadata protocol.AudioMetadata) (*ClientStream, error) {
 	var result StreamResult
 
 	conn, err := dialWebSocket(ctx, c.config.URL, c.config.Timeout)
 	if err != nil {
-		return result, err
+		return nil, err
 	}
-	defer conn.Close()
 
+	stream := &ClientStream{client: c, conn: conn, result: result, metadata: metadata}
 	if err := conn.WriteJSON(protocol.ClientHello{Envelope: protocol.Envelope{Version: c.config.Version, Type: protocol.MessageTypeClientHello}, ClientName: defaultClientName, SessionID: defaultSessionID}); err != nil {
-		return result, err
+		_ = stream.Close(ctx)
+		return nil, err
 	}
 
 	msg, err := readMessage(ctx, conn)
 	if err != nil {
-		return result, err
+		_ = stream.Close(ctx)
+		return nil, err
 	}
-	if err := consumeMessage(msg, &result); err != nil {
-		return result, err
+	if err := consumeMessage(msg, &stream.result); err != nil {
+		_ = stream.Close(ctx)
+		return nil, err
 	}
 
 	if err := conn.WriteJSON(protocol.AudioStart{Envelope: protocol.Envelope{Version: c.config.Version, Type: protocol.MessageTypeAudioStart}, SessionID: defaultSessionID, StreamID: defaultStreamID, Metadata: metadata}); err != nil {
-		return result, err
+		_ = stream.Close(ctx)
+		return nil, err
 	}
-	if done, err := drainUntilQuiet(ctx, conn, quietReadWindow, &result); err != nil || done {
-		return result, err
-	}
-
-	for index, frame := range frames {
-		if err := conn.WriteJSON(protocol.AudioFrame{Envelope: protocol.Envelope{Version: c.config.Version, Type: protocol.MessageTypeAudioFrame}, SessionID: defaultSessionID, StreamID: defaultStreamID, Sequence: index + 1, PayloadBase64: base64.StdEncoding.EncodeToString(frame)}); err != nil {
-			return result, err
-		}
-
-		if done, err := drainUntilQuiet(ctx, conn, quietReadWindow, &result); err != nil || done {
-			return result, err
-		}
+	if done, err := drainUntilQuiet(ctx, conn, quietReadWindow, &stream.result); err != nil || done {
+		_ = stream.Close(ctx)
+		return nil, err
 	}
 
-	if err := conn.WriteJSON(protocol.AudioStop{Envelope: protocol.Envelope{Version: c.config.Version, Type: protocol.MessageTypeAudioStop}, SessionID: defaultSessionID, StreamID: defaultStreamID, LastSequence: len(frames)}); err != nil {
-		return result, err
+	return stream, nil
+}
+
+func (s *ClientStream) AcceptFrame(ctx context.Context, sequence int, frame []byte) (StreamResult, error) {
+	if s.closed {
+		return s.result, protocol.NewError(protocol.ErrorCodeInvalidMessage, "sidecar stream is closed")
+	}
+	if sequence <= 0 {
+		sequence = s.sequence + 1
+	}
+	if err := s.conn.WriteJSON(protocol.AudioFrame{Envelope: protocol.Envelope{Version: s.client.config.Version, Type: protocol.MessageTypeAudioFrame}, SessionID: defaultSessionID, StreamID: defaultStreamID, Sequence: sequence, PayloadBase64: base64.StdEncoding.EncodeToString(frame)}); err != nil {
+		return s.result, err
+	}
+	s.sequence = sequence
+
+	if done, err := drainUntilQuiet(ctx, s.conn, quietReadWindow, &s.result); err != nil || done {
+		return s.result, err
+	}
+	return s.result, nil
+}
+
+func (s *ClientStream) Finish(ctx context.Context) (StreamResult, error) {
+	if s.closed {
+		return s.result, protocol.NewError(protocol.ErrorCodeInvalidMessage, "sidecar stream is closed")
+	}
+	if err := s.conn.WriteJSON(protocol.AudioStop{Envelope: protocol.Envelope{Version: s.client.config.Version, Type: protocol.MessageTypeAudioStop}, SessionID: defaultSessionID, StreamID: defaultStreamID, LastSequence: s.sequence}); err != nil {
+		return s.result, err
 	}
 
 	for {
-		msg, err := readMessage(ctx, conn)
+		msg, err := readMessage(ctx, s.conn)
 		if err != nil {
-			return result, err
+			return s.result, err
 		}
 
-		done, err := consumeMessageWithDone(msg, &result)
+		done, err := consumeMessageWithDone(msg, &s.result)
 		if err != nil {
-			return result, err
+			return s.result, err
 		}
 		if done {
-			return result, nil
+			return s.result, nil
 		}
 	}
+}
+
+func (s *ClientStream) Close(ctx context.Context) error {
+	_ = ctx
+	if s == nil || s.closed {
+		return nil
+	}
+	s.closed = true
+	return s.conn.Close()
 }
 
 func drainUntilQuiet(ctx context.Context, conn *websocketConn, quiet time.Duration, result *StreamResult) (bool, error) {

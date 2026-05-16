@@ -7,8 +7,8 @@ Talka uses a split local architecture:
 - iOS app: audio capture and user-facing microphone controls.
 - macOS Go service: pairing, encrypted transport, audio session control, ASR orchestration, Ollama post-processing, and text insertion.
 - macOS SwiftUI shell: menu bar UI, settings, diagnostics, native Accessibility state, and the local paste broker.
-- Embedded FunASR C++/ONNX Runtime: default local speech recognition backend packaged inside the macOS app bundle.
-- External FunASR runtime or legacy Talka sidecar: optional advanced compatibility backends.
+- Embedded FunASR C++/ONNX Runtime: local streaming speech recognition backend packaged inside the macOS app bundle.
+- Sherpa ONNX: in-process streaming recognizer exposed as the ONNX ASR mode.
 - Ollama: local LLM post-processing.
 
 ```mermaid
@@ -16,10 +16,10 @@ flowchart LR
   IOS["iOS App\nSwiftUI + AVAudioEngine"] --> DISC["Bonjour/mDNS\n_talka._tcp"]
   IOS --> ENC["Encrypted Audio Stream\nWebSocket or QUIC-like frames"]
   ENC --> GO["macOS Go Service"]
-  GO --> ASR["Embedded FunASR Runtime\nDefault Local ASR"]
+  GO --> ASR["Embedded FunASR Runtime\nStreaming ASR"]
   ASR --> GO
-  GO -. optional .-> EXT["External FunASR / Legacy Sidecar"]
-  EXT -.-> GO
+  GO --> ONNX["Sherpa ONNX\nIn-process Streaming ASR"]
+  ONNX --> GO
   GO --> OLLAMA["Ollama\nText Cleanup + Final Polish"]
   OLLAMA --> GO
   GO --> PB["Unix Socket Paste Broker\nSwift/App Process"]
@@ -266,22 +266,20 @@ TalkaMac.app
 Internal provider modes:
 
 ```text
-funasr_embedded   bundled runtime + bundled models
-funasr_external   direct websocket connection to external FunASR runtime
-sidecar           compatibility mode for legacy Talka websocket sidecar
-funasr_container  optional developer or migration mode
+funasr   bundled FunASR runtime + bundled models, streaming through Talka sidecar protocol
+onnx     in-process sherpa-onnx streaming recognizer
 ```
 
 User-facing ASR mode:
 
 ```text
-Embedded   maps to funasr_embedded
-External   maps to funasr_external
+FunASR   maps to funasr
+ONNX     maps to onnx
 ```
 
-The settings UI intentionally exposes only `Embedded` and `External`. FunASR's internal recognition mode, such as `2pass`, remains a runtime configuration detail and should not be presented as the product-level ASR mode.
+The settings UI intentionally exposes only `FunASR` and `ONNX`. FunASR's internal recognition mode, such as `2pass`, remains a runtime configuration detail and should not be presented as the product-level ASR mode.
 
-In embedded mode, the Go service starts, monitors, and restarts the bundled runtime. In external mode, the Go service skips process ownership and performs direct websocket health checks instead. In legacy mode, the Go service talks to the older sidecar contract for backward compatibility.
+In FunASR mode, the Go service starts, monitors, and restarts the bundled runtime, then streams iOS audio frames into it as they arrive. In ONNX mode, the Go service streams frames into sherpa-onnx directly in process.
 
 Benefits:
 
@@ -422,7 +420,7 @@ server:
   service_name: Talka
 
 asr:
-  provider: funasr_embedded
+  provider: funasr
   runtime_path: /Applications/Talka.app/Contents/Resources/talka-asr-runtime
   host: 127.0.0.1
   port: 10095
@@ -451,14 +449,12 @@ logging:
   capture_transcript: false
 ```
 
-Example external runtime override:
+Example ONNX runtime override:
 
 ```yaml
 asr:
-  provider: funasr_external
-  host: 127.0.0.1
-  port: 10095
-  mode: 2pass
+  provider: onnx
+  mode: streaming
   sample_rate: 16000
 ```
 
@@ -468,8 +464,6 @@ Settings mapping:
 - `llm.model` maps to AI Model.
 - `llm.timeout_seconds` maps to AI Timeout.
 - `asr.provider` maps to ASR Mode.
-- `asr.host` and `asr.port` map to ASR Endpoint and ASR Port.
-- `asr.host` and `asr.port` are editable only when `asr.provider` is `funasr_external`.
 - `asr.mode` remains an internal runtime value such as `2pass`.
 
 Secrets and paired-device keys should live in Keychain, not in this YAML file.

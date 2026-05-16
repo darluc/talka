@@ -32,11 +32,11 @@ func newPipelineFromConfig(cfg config.Config, configDir string) (*Pipeline, erro
 }
 
 func newASRProviderFromConfig(cfg config.ASRConfig, configDir string) (ASRProvider, error) {
-	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
+	provider := normalizeASRProvider(cfg.Provider)
 	if provider == "sidecar" {
 		return asr.NewSidecarProvider(asr.Config{URL: asrWebsocketURL(cfg.Host, cfg.Port), Version: protocol.VersionV1Alpha1}), nil
 	}
-	if provider == "sherpa_onnx_streaming" {
+	if provider == "onnx" {
 		encoderPath := sherpaONNXModelPathForPrecision(cfg.SherpaONNX.ModelType, cfg.SherpaONNX.Precision, resolveConfigPath(configDir, cfg.SherpaONNX.EncoderPath))
 		decoderPath := sherpaONNXModelPathForPrecision(cfg.SherpaONNX.ModelType, cfg.SherpaONNX.Precision, resolveConfigPath(configDir, cfg.SherpaONNX.DecoderPath))
 		return asr.NewSherpaONNXProvider(asr.SherpaONNXConfig{
@@ -84,10 +84,9 @@ func newASRProviderFromConfig(cfg config.ASRConfig, configDir string) (ASRProvid
 			Timeout: 5 * time.Second,
 		}), nil
 	}
-	if provider != "funasr_onnx" && provider != "funasr_embedded" {
+	if provider != "funasr" && provider != "funasr_onnx" {
 		return nil, fmt.Errorf("unsupported asr.provider %q", cfg.Provider)
 	}
-	isEmbedded := provider == "funasr_embedded"
 	// Resolve FunASR binary path relative to config dir before building args.
 	if cfg.FunASRBinaryPath != "" {
 		cfg.FunASRBinaryPath = resolveOptionalConfigPath(configDir, cfg.FunASRBinaryPath)
@@ -97,7 +96,7 @@ func newASRProviderFromConfig(cfg config.ASRConfig, configDir string) (ASRProvid
 		RuntimeArgs:     asrRuntimeArgsFromConfig(cfg),
 		Host:            cfg.Host,
 		Port:            cfg.Port,
-		AlwaysEphemeral: isEmbedded,
+		AlwaysEphemeral: true,
 		HotwordPath:     resolveOptionalConfigPath(configDir, cfg.HotwordPath),
 		Models: asr.ModelPaths{
 			ASR:    resolveConfigPath(configDir, cfg.Models.ASR),
@@ -109,18 +108,21 @@ func newASRProviderFromConfig(cfg config.ASRConfig, configDir string) (ASRProvid
 		},
 		StartupTimeout: time.Duration(cfg.StartupTimeout) * time.Second,
 	})
-	if isEmbedded {
-		return asr.NewManagedSidecarProvider(manager, asr.Config{
-			Version: protocol.VersionV1Alpha1,
-			Timeout: 5 * time.Second,
-		}), nil
-	}
-
-	return asr.NewUpstreamProvider(manager, asr.UpstreamProviderConfig{
-		URL:     asrWebsocketURL(cfg.Host, cfg.Port),
-		Mode:    cfg.Mode,
+	return asr.NewManagedSidecarProvider(manager, asr.Config{
+		Version: protocol.VersionV1Alpha1,
 		Timeout: 5 * time.Second,
 	}), nil
+}
+
+func normalizeASRProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "", "funasr", "funasr_embedded":
+		return "funasr"
+	case "onnx", "sherpa", "sherpa_onnx_streaming":
+		return "onnx"
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
+	}
 }
 
 func sherpaONNXModelPathForPrecision(modelType, precision, path string) string {

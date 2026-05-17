@@ -649,6 +649,7 @@ final class RemoteMicShellViewModel: ObservableObject {
     private let disconnectSecureSession: () -> Void
     private let firstFrameTimeoutNanoseconds: UInt64
     private let stopTailCaptureNanoseconds: UInt64
+    private let audioOperationTimeoutNanoseconds: UInt64
     private var knownIdentity: PairedMacIdentity?
     private var lastAudioSequence = 0
     private var frameAccumulator = PCMFrameAccumulator(frameByteCount: TalkaAudioFormat.frameByteCount)
@@ -665,7 +666,8 @@ final class RemoteMicShellViewModel: ObservableObject {
         microphoneSource: AudioCaptureSourcing = UnavailableMicrophoneSource(),
         disconnectSecureSession: @escaping () -> Void = {},
         firstFrameTimeoutNanoseconds: UInt64 = 3_000_000_000,
-        stopTailCaptureNanoseconds: UInt64 = 250_000_000
+        stopTailCaptureNanoseconds: UInt64 = 250_000_000,
+        audioOperationTimeoutNanoseconds: UInt64 = 8_000_000_000
     ) {
         self.discoveryBrowser = discoveryBrowser
         self.sessionClient = sessionClient
@@ -675,6 +677,7 @@ final class RemoteMicShellViewModel: ObservableObject {
         self.disconnectSecureSession = disconnectSecureSession
         self.firstFrameTimeoutNanoseconds = firstFrameTimeoutNanoseconds
         self.stopTailCaptureNanoseconds = stopTailCaptureNanoseconds
+        self.audioOperationTimeoutNanoseconds = audioOperationTimeoutNanoseconds
 
         if let microphoneSource = microphoneSource as? MicrophonePCMSource {
             microphoneSource.diagnosticHandler = { [weak self] message in
@@ -870,7 +873,9 @@ final class RemoteMicShellViewModel: ObservableObject {
         frameQueue = BoundedAudioFrameQueue(maxFrames: maxQueuedFrames)
 
         do {
-            try await audioStreamClient.sendAudioStart(metadata: .talkaDefault)
+            try await withAudioOperationTimeout {
+                try await self.audioStreamClient.sendAudioStart(metadata: .talkaDefault)
+            }
 
             for chunk in chunks {
                 try await sendPCMChunk(chunk)
@@ -878,7 +883,9 @@ final class RemoteMicShellViewModel: ObservableObject {
 
             try await flushPendingPCMFrame()
             recordingState = .stopping
-            try await audioStreamClient.sendAudioStop(lastSequence: lastAudioSequence)
+            try await withAudioOperationTimeout {
+                try await self.audioStreamClient.sendAudioStop(lastSequence: self.lastAudioSequence)
+            }
             recordingState = .idle
             audioLevel = 0
             lastAudioDiagnostic = nil
@@ -903,7 +910,9 @@ final class RemoteMicShellViewModel: ObservableObject {
         pcmDrainTask = nil
 
         do {
-            try await audioStreamClient.sendAudioStart(metadata: .talkaDefault)
+            try await withAudioOperationTimeout {
+                try await self.audioStreamClient.sendAudioStart(metadata: .talkaDefault)
+            }
             let pendingPCMChunks = pendingPCMChunks
             try microphoneSource.start { [weak self, pendingPCMChunks] pcm in
                 pendingPCMChunks.append(pcm)
@@ -942,21 +951,30 @@ final class RemoteMicShellViewModel: ObservableObject {
                 try await Task.sleep(nanoseconds: stopTailCaptureNanoseconds)
             }
             microphoneSource.stop()
+            let shouldStop = recordingState == .recording
+            if shouldStop {
+                recordingState = .stopping
+            }
             if let pcmDrainTask {
-                await pcmDrainTask.value
+                try await withAudioOperationTimeout {
+                    await pcmDrainTask.value
+                }
             }
             try await drainPendingPCMChunks()
             await Task.yield()
             if let pcmDrainTask {
-                await pcmDrainTask.value
+                try await withAudioOperationTimeout {
+                    await pcmDrainTask.value
+                }
             }
             try await drainPendingPCMChunks()
-            guard recordingState == .recording else {
+            guard shouldStop else {
                 return
             }
             try await flushPendingPCMFrame()
-            recordingState = .stopping
-            try await audioStreamClient.sendAudioStop(lastSequence: lastAudioSequence)
+            try await withAudioOperationTimeout {
+                try await self.audioStreamClient.sendAudioStop(lastSequence: self.lastAudioSequence)
+            }
             recordingState = .idle
             audioLevel = 0
             lastErrorMessage = nil
@@ -973,7 +991,9 @@ final class RemoteMicShellViewModel: ObservableObject {
         microphoneSource.stop()
         cancelFirstFrameTimeout()
         do {
-            try await audioStreamClient.sendAudioCancel(reason: reason)
+            try await withAudioOperationTimeout {
+                try await self.audioStreamClient.sendAudioCancel(reason: reason)
+            }
             recordingState = .idle
             audioLevel = 0
             lastAudioDiagnostic = nil
@@ -1005,7 +1025,7 @@ final class RemoteMicShellViewModel: ObservableObject {
     }
 
     private func drainPendingPCMChunks() async throws {
-        while recordingState == .recording {
+        while recordingState == .recording || recordingState == .stopping {
             let chunks = pendingPCMChunks.drain()
             guard !chunks.isEmpty else {
                 return
@@ -1017,7 +1037,7 @@ final class RemoteMicShellViewModel: ObservableObject {
     }
 
     private func sendPCMChunk(_ chunk: Data) async throws {
-        guard recordingState == .recording else {
+        guard recordingState == .recording || recordingState == .stopping else {
             return
         }
         print("[Talka] sendPCMChunk called with chunk size=\(chunk.count)")
@@ -1038,7 +1058,7 @@ final class RemoteMicShellViewModel: ObservableObject {
     }
 
     private func flushPendingPCMFrame() async throws {
-        guard recordingState == .recording else {
+        guard recordingState == .recording || recordingState == .stopping else {
             return
         }
         guard let tailFrame = frameAccumulator.flushPaddedFrame() else {
@@ -1054,12 +1074,32 @@ final class RemoteMicShellViewModel: ObservableObject {
         let sequence = lastAudioSequence + 1
         audioLevel = PCMVolumeLevel.level(for: frame)
         print("[Talka] sending audio frame seq=\(sequence), size=\(frame.count)")
-        try await audioStreamClient.sendAudioFrame(sequence: sequence, payload: frame)
-        guard recordingState == .recording else {
+        try await withAudioOperationTimeout {
+            try await self.audioStreamClient.sendAudioFrame(sequence: sequence, payload: frame)
+        }
+        guard recordingState == .recording || recordingState == .stopping else {
             return
         }
         lastAudioSequence = sequence
         print("[Talka] audio frame sent successfully")
+    }
+
+    private func withAudioOperationTimeout<T>(_ operation: @escaping () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask { [audioOperationTimeoutNanoseconds] in
+                try await Task.sleep(nanoseconds: audioOperationTimeoutNanoseconds)
+                throw RemoteMicFlowError.recordingFailed("Audio streaming timed out. Reconnect the Mac and try again.")
+            }
+
+            guard let result = try await group.next() else {
+                throw RemoteMicFlowError.recordingFailed("Audio streaming timed out. Reconnect the Mac and try again.")
+            }
+            group.cancelAll()
+            return result
+        }
     }
 
     private func stopAfterRecordingError(_ error: RemoteMicFlowError) async {
@@ -1545,10 +1585,11 @@ final class SecureAudioStreamClient: AudioStreamClient {
     private func send(type: String, payload: [String: Any], session: SecureAudioSessionKeys) async throws {
         let plaintext = try JSONSerialization.data(withJSONObject: payload)
         print("[Talka] encrypting type=\(type) with seq=\(nextSequence)")
-        let encrypted = try TalkaSecureTransport.encrypt(type: type, plaintext: plaintext, session: session, seq: nextSequence)
-        nextSequence += 1
+        let sequence = nextSequence
+        let encrypted = try TalkaSecureTransport.encrypt(type: type, plaintext: plaintext, session: session, seq: sequence)
         let data = try encoder.encode(encrypted)
         try await (webSocket ?? webSocketConnector.makeWebSocketTask(url: session.audioWebSocketURL)).send(String(decoding: data, as: UTF8.self))
+        nextSequence = sequence + 1
     }
 
     private func activeWebSocket() throws -> SecureAudioWebSocketTasking {

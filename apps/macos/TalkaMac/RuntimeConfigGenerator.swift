@@ -78,7 +78,12 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
     }
 
     private func replaceASRBlock(in yaml: String, resourcesURL: URL, preservingProviderFrom originalYAML: String? = nil) -> String {
-        let block = defaultASRYAML(resourcesURL: resourcesURL, preferredProvider: preferredASRProvider(in: originalYAML ?? yaml))
+        let sourceYAML = originalYAML ?? yaml
+        let block = defaultASRYAML(
+            resourcesURL: resourcesURL,
+            preferredProvider: preferredASRProvider(in: sourceYAML),
+            preferredSherpaProfile: preferredSherpaProfile(in: sourceYAML)
+        )
         if yaml.range(of: #"(?ms)^asr:\n.*?(?=^llm:\n)"#, options: .regularExpression) != nil {
             return yaml.replacingOccurrences(
                 of: #"(?ms)^asr:\n.*?(?=^llm:\n)"#,
@@ -168,9 +173,9 @@ logging:
 """
 	}
 
-    private func defaultASRYAML(resourcesURL: URL, preferredProvider: String? = nil) -> String {
+    private func defaultASRYAML(resourcesURL: URL, preferredProvider: String? = nil, preferredSherpaProfile: String? = nil) -> String {
         let provider = preferredProvider ?? "auto"
-        if provider != "funasr", let sherpaModel = availableSherpaModel(resourcesURL: resourcesURL) {
+        if provider != "funasr", let sherpaModel = availableSherpaModel(resourcesURL: resourcesURL, preferredProfile: preferredSherpaProfile) {
             return sherpaASRYAML(resourcesURL: resourcesURL, model: sherpaModel)
         }
         return funasrASRYAML(resourcesURL: resourcesURL)
@@ -186,7 +191,20 @@ logging:
         return nil
     }
 
+    private func preferredSherpaProfile(in yaml: String) -> String? {
+        if yaml.range(of: #"(?m)^\s*model_profile:\s*paraformer-bilingual\s*$"#, options: .regularExpression) != nil ||
+            yaml.contains("streaming-paraformer-bilingual-zh-en") {
+            return "paraformer-bilingual"
+        }
+        if yaml.range(of: #"(?m)^\s*model_profile:\s*paraformer-trilingual\s*$"#, options: .regularExpression) != nil ||
+            yaml.contains("streaming-paraformer-trilingual-zh-cantonese-en") {
+            return "paraformer-trilingual"
+        }
+        return nil
+    }
+
     private struct SherpaModelBundle {
+        let profile: String
         let modelType: String
         let precision: String
         let directory: URL
@@ -195,7 +213,7 @@ logging:
         let joinerFile: String
     }
 
-    private func availableSherpaModel(resourcesURL: URL) -> SherpaModelBundle? {
+    private func availableSherpaModel(resourcesURL: URL, preferredProfile: String? = nil) -> SherpaModelBundle? {
         let frameworksURL = resourcesURL.deletingLastPathComponent().appendingPathComponent("Frameworks")
         let dylibs = (try? FileManager.default.contentsOfDirectory(atPath: frameworksURL.path)) ?? []
         let hasLibrary = dylibs.contains { $0.hasPrefix("libsherpa-onnx-c-api") && $0.hasSuffix(".dylib") }
@@ -203,6 +221,7 @@ logging:
 
         let candidates = [
             SherpaModelBundle(
+                profile: "paraformer-trilingual",
                 modelType: "paraformer",
                 precision: "int8",
                 directory: resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en"),
@@ -211,16 +230,24 @@ logging:
                 joinerFile: ""
             ),
             SherpaModelBundle(
-                modelType: "transducer",
+                profile: "paraformer-bilingual",
+                modelType: "paraformer",
                 precision: "int8",
-                directory: resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-zipformer-bilingual-zh-en"),
-                encoderFile: "encoder-epoch-99-avg-1.int8.onnx",
-                decoderFile: "decoder-epoch-99-avg-1.onnx",
-                joinerFile: "joiner-epoch-99-avg-1.int8.onnx"
+                directory: resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-bilingual-zh-en"),
+                encoderFile: "encoder.int8.onnx",
+                decoderFile: "decoder.int8.onnx",
+                joinerFile: ""
             ),
         ]
 
-        return candidates.first { model in
+        let orderedCandidates: [SherpaModelBundle]
+        if let preferredProfile, let preferred = candidates.first(where: { $0.profile == preferredProfile }) {
+            orderedCandidates = [preferred] + candidates.filter { $0.profile != preferredProfile }
+        } else {
+            orderedCandidates = candidates
+        }
+
+        return orderedCandidates.first { model in
             var requiredModelFiles = [
                 model.directory.appendingPathComponent("tokens.txt"),
                 model.directory.appendingPathComponent(model.encoderFile),
@@ -262,6 +289,7 @@ asr:
     itn: \(funasrModelsURL.appendingPathComponent("itn-zh").path)
     lm: ""
   sherpa_onnx:
+    model_profile: \(model.profile)
     model_type: \(model.modelType)
     precision: \(model.precision)
     tokens_path: \(model.directory.appendingPathComponent("tokens.txt").path)
@@ -303,6 +331,7 @@ asr:
     itn: \(modelsURL.appendingPathComponent("itn-zh").path)
     lm: ""
   sherpa_onnx:
+    model_profile: paraformer-trilingual
     model_type: paraformer
     precision: int8
     tokens_path: \(resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/tokens.txt").path)

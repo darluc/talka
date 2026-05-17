@@ -100,5 +100,8 @@ func durationMilliseconds(duration time.Duration) int64 {
 	if duration <= 0 {
 		return 0
 	}
+	if duration < time.Millisecond {
+		return 1
+	}
 	return duration.Milliseconds()
 }

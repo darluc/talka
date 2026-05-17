@@ -30,21 +30,23 @@ const (
 var newIOSPairingStore = func() pairing.Store { return pairing.NewDarwinStore() }
 
 type App struct {
-	mu              sync.RWMutex
-	cfg             config.Config
-	configPath      string
-	configDir       string
-	startedAt       time.Time
-	logger          *slog.Logger
-	devices         map[string]Device
-	pairing         *PairingSession
-	pipeline        *Pipeline
-	asrStatus       componentReadiness
-	ollamaStatus    componentReadiness
-	iosSessions     map[string]*iosAudioSession
-	iosPairing      *pairing.StartResponse
-	iosManager      *pairing.Manager
-	latencyRecorder *LatencyRecorder
+	mu               sync.RWMutex
+	cfg              config.Config
+	configPath       string
+	configDir        string
+	startedAt        time.Time
+	logger           *slog.Logger
+	devices          map[string]Device
+	pairing          *PairingSession
+	pipeline         *Pipeline
+	pipelineRefs     map[*Pipeline]int
+	retiredPipelines map[*Pipeline]struct{}
+	asrStatus        componentReadiness
+	ollamaStatus     componentReadiness
+	iosSessions      map[string]*iosAudioSession
+	iosPairing       *pairing.StartResponse
+	iosManager       *pairing.Manager
+	latencyRecorder  *LatencyRecorder
 }
 
 type componentReadiness struct {
@@ -220,15 +222,17 @@ func NewWithPipeline(cfg config.Config, configPath string, logger *slog.Logger, 
 	}
 
 	app := &App{
-		cfg:             cfg,
-		configPath:      configPath,
-		configDir:       configDir,
-		startedAt:       time.Now(),
-		logger:          logger,
-		devices:         map[string]Device{},
-		pipeline:        pipeline,
-		iosSessions:     map[string]*iosAudioSession{},
-		latencyRecorder: NewLatencyRecorder(defaultLatencyTraceLimit),
+		cfg:              cfg,
+		configPath:       configPath,
+		configDir:        configDir,
+		startedAt:        time.Now(),
+		logger:           logger,
+		devices:          map[string]Device{},
+		pipeline:         pipeline,
+		pipelineRefs:     map[*Pipeline]int{},
+		retiredPipelines: map[*Pipeline]struct{}{},
+		iosSessions:      map[string]*iosAudioSession{},
+		latencyRecorder:  NewLatencyRecorder(defaultLatencyTraceLimit),
 	}
 	app.iosManager = pairing.NewManager(pairing.Config{ServerDeviceID: "talka-mac", ServerDeviceName: cfg.Server.ServiceName, Store: newIOSPairingStore(), PairingTTL: pairingLifetime, InactivityTimeout: 10 * time.Minute})
 	app.logger.Info("app started",
@@ -344,7 +348,25 @@ func (a *App) Serve(ctx context.Context, ln net.Listener) error {
 }
 
 func (a *App) Shutdown(ctx context.Context) error {
-	return a.pipeline.Shutdown(ctx)
+	a.mu.Lock()
+	pipelines := make([]*Pipeline, 0, len(a.retiredPipelines)+1)
+	if a.pipeline != nil {
+		pipelines = append(pipelines, a.pipeline)
+	}
+	for pipeline := range a.retiredPipelines {
+		if pipeline != nil && pipeline != a.pipeline {
+			pipelines = append(pipelines, pipeline)
+		}
+	}
+	a.mu.Unlock()
+
+	var shutdownErr error
+	for _, pipeline := range pipelines {
+		if err := pipeline.Shutdown(ctx); err != nil && shutdownErr == nil {
+			shutdownErr = err
+		}
+	}
+	return shutdownErr
 }
 
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -476,17 +498,67 @@ func (a *App) handleConfig(w http.ResponseWriter, r *http.Request) {
 		a.pipeline = pipeline
 		a.mu.Unlock()
 		if previousPipeline != nil && previousPipeline != pipeline {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := previousPipeline.Shutdown(shutdownCtx); err != nil {
-				a.logger.Warn("failed to shut down previous pipeline after config update", "error", err)
-			}
+			a.retirePipeline(previousPipeline)
 		}
 		a.logger.Info("config updated", "config_path", a.configPath, "logging_level", updated.Logging.Level)
 		writeJSON(w, http.StatusOK, ConfigResponse{Path: a.configPath, Config: updated})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "config endpoint only accepts GET or PUT", nil)
 	}
+}
+
+func (a *App) retainPipeline(pipeline *Pipeline) func() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.retainPipelineLocked(pipeline)
+}
+
+func (a *App) retainPipelineLocked(pipeline *Pipeline) func() {
+	if pipeline == nil {
+		return func() {}
+	}
+	a.pipelineRefs[pipeline]++
+	return func() {
+		var shouldShutdown bool
+		a.mu.Lock()
+		if refs := a.pipelineRefs[pipeline]; refs <= 1 {
+			delete(a.pipelineRefs, pipeline)
+			if _, retired := a.retiredPipelines[pipeline]; retired {
+				delete(a.retiredPipelines, pipeline)
+				shouldShutdown = true
+			}
+		} else {
+			a.pipelineRefs[pipeline] = refs - 1
+		}
+		a.mu.Unlock()
+		if shouldShutdown {
+			a.shutdownPipelineAsync(pipeline)
+		}
+	}
+}
+
+func (a *App) retirePipeline(pipeline *Pipeline) {
+	if pipeline == nil {
+		return
+	}
+	a.mu.Lock()
+	if a.pipelineRefs[pipeline] > 0 {
+		a.retiredPipelines[pipeline] = struct{}{}
+		a.mu.Unlock()
+		return
+	}
+	a.mu.Unlock()
+	a.shutdownPipelineAsync(pipeline)
+}
+
+func (a *App) shutdownPipelineAsync(pipeline *Pipeline) {
+	go func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := pipeline.Shutdown(shutdownCtx); err != nil {
+			a.logger.Warn("failed to shut down previous pipeline after config update", "error", err)
+		}
+	}()
 }
 
 func (a *App) handleAccessibilityOpen(w http.ResponseWriter, r *http.Request) {

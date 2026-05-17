@@ -168,7 +168,7 @@ func (a *App) handleIOSAudioStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleIOSAudioStreamWithStreamingASR(parentCtx context.Context, conn net.Conn, reader *bufio.Reader, deviceID, traceID string, deadline time.Time) (bool, error) {
-	machine, pipeline, streamingProvider, ok, err := a.iosStreamingAudioResources(deviceID)
+	machine, pipeline, streamingProvider, releasePipeline, ok, err := a.iosStreamingAudioResources(deviceID)
 	if err != nil {
 		a.recordLatencyError(traceID, "session", err)
 		a.completeLatencyTrace(traceID)
@@ -178,6 +178,7 @@ func (a *App) handleIOSAudioStreamWithStreamingASR(parentCtx context.Context, co
 	if !ok {
 		return false, nil
 	}
+	defer releasePipeline()
 
 	ctx, cancel := context.WithTimeout(parentCtx, time.Until(deadline))
 	defer cancel()
@@ -365,18 +366,22 @@ func (a *App) handleIOSAudioStreamWithStreamingASR(parentCtx context.Context, co
 	}
 }
 
-func (a *App) iosStreamingAudioResources(deviceID string) (*session.StateMachine, *Pipeline, asr.StreamingProvider, bool, error) {
+func (a *App) iosStreamingAudioResources(deviceID string) (*session.StateMachine, *Pipeline, asr.StreamingProvider, func(), bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	active := a.iosSessions[deviceID]
 	if active == nil {
-		return nil, nil, nil, false, nil
+		return nil, nil, nil, nil, false, nil
 	}
 	if a.pipeline == nil {
-		return nil, nil, nil, false, nil
+		return nil, nil, nil, nil, false, nil
 	}
 	streamingProvider, ok := a.pipeline.asr.(asr.StreamingProvider)
-	return active.machine, a.pipeline, streamingProvider, ok, nil
+	if !ok {
+		return active.machine, a.pipeline, nil, nil, false, nil
+	}
+	release := a.retainPipelineLocked(a.pipeline)
+	return active.machine, a.pipeline, streamingProvider, release, true, nil
 }
 
 func (a *App) queueIOSFinalTextInsertion(traceID, deviceID, finalText string) {

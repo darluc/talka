@@ -141,10 +141,12 @@ func (a *App) processEncryptedIOSAudioSession(ctx context.Context, deviceID, tra
 		a.recordLatencyError(traceID, "pipeline", err)
 		return ProcessResult{}, err
 	}
+	releasePipeline := a.retainPipelineLocked(pipeline)
 	decryptStartedAt := time.Now()
 	metadata, frames, err := decryptIOSAudioMessages(active.machine, messages)
 	decryptDuration := time.Since(decryptStartedAt)
 	a.mu.Unlock()
+	defer releasePipeline()
 	if err != nil {
 		a.recordLatencyError(traceID, "decrypt_decode", err)
 		a.logger.Error("iOS audio session decrypt failed", "device_id", deviceID, "encrypted_messages", len(messages), "error", err)

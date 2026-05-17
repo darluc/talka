@@ -506,6 +506,29 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertNil(viewModel.lastErrorMessage)
     }
 
+    func testSaveConfigAppliesSelectedONNXModelProfile() async {
+        var config = ControlConfig.fixture()
+        config.asr.sherpaONNX.tokensPath = "/Applications/TalkaMac.app/Contents/Resources/models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/tokens.txt"
+        config.asr.sherpaONNX.encoderPath = "/Applications/TalkaMac.app/Contents/Resources/models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/encoder.int8.onnx"
+        config.asr.sherpaONNX.decoderPath = "/Applications/TalkaMac.app/Contents/Resources/models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/decoder.int8.onnx"
+        let client = FakeControlAPIClient(configResults: [.success(config)])
+        let viewModel = AppShellViewModel(client: client)
+
+        await viewModel.refresh()
+        viewModel.config.asr.provider = "onnx"
+        viewModel.config.asr.sherpaONNX.apply(profile: .paraformerBilingual)
+        await viewModel.saveConfig()
+
+        XCTAssertEqual(client.savedConfig?.asr.provider, "onnx")
+        XCTAssertEqual(client.savedConfig?.asr.mode, "streaming")
+        XCTAssertEqual(client.savedConfig?.asr.sherpaONNX.modelProfile, "paraformer-bilingual")
+        XCTAssertEqual(client.savedConfig?.asr.sherpaONNX.modelType, "paraformer")
+        XCTAssertEqual(client.savedConfig?.asr.sherpaONNX.tokensPath, "/Applications/TalkaMac.app/Contents/Resources/models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/tokens.txt")
+        XCTAssertEqual(client.savedConfig?.asr.sherpaONNX.encoderPath, "/Applications/TalkaMac.app/Contents/Resources/models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/encoder.int8.onnx")
+        XCTAssertEqual(client.savedConfig?.asr.sherpaONNX.decoderPath, "/Applications/TalkaMac.app/Contents/Resources/models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/decoder.int8.onnx")
+        XCTAssertEqual(client.savedConfig?.asr.sherpaONNX.joinerPath, "")
+    }
+
     func testForgetDeviceRemovesTrustedDeviceFromViewModel() async {
         let device = ControlDevice.fixture()
         let client = FakeControlAPIClient(
@@ -954,6 +977,60 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertTrue(contents.contains("model_type: paraformer"))
         XCTAssertTrue(contents.contains("precision: int8"))
         XCTAssertTrue(contents.contains("tokens_path: \(sherpaDir.appendingPathComponent("tokens.txt").path)"))
+    }
+
+    func testRuntimeConfigGeneratorPreservesSavedSherpaBilingualProfile() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let resourcesDir = tempDir.appendingPathComponent("resources", isDirectory: true)
+        let frameworksDir = tempDir.appendingPathComponent("Frameworks", isDirectory: true)
+        let trilingualDir = resourcesDir.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en", isDirectory: true)
+        let bilingualDir = resourcesDir.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-bilingual-zh-en", isDirectory: true)
+        let configURL = tempDir.appendingPathComponent("config.yaml")
+        try FileManager.default.createDirectory(at: trilingualDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: bilingualDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: frameworksDir, withIntermediateDirectories: true)
+        for dir in [trilingualDir, bilingualDir] {
+            for name in ["tokens.txt", "encoder.int8.onnx", "decoder.int8.onnx"] {
+                try "asset".write(to: dir.appendingPathComponent(name), atomically: true, encoding: .utf8)
+            }
+        }
+        try "dylib".write(to: frameworksDir.appendingPathComponent("libsherpa-onnx-c-api.dylib"), atomically: true, encoding: .utf8)
+        setenv("TALKA_CONFIG_PATH", configURL.path, 1)
+        setenv("TALKA_RESOURCES_PATH", resourcesDir.path, 1)
+        try """
+        server:
+          bind_host: 0.0.0.0
+          port: 8080
+          service_name: Talka
+        asr:
+          provider: onnx
+          runtime_path: /old/talka-asr-runtime
+          mode: streaming
+          sherpa_onnx:
+            model_profile: paraformer-bilingual
+            model_type: paraformer
+            precision: int8
+            tokens_path: /old/models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/tokens.txt
+            encoder_path: /old/models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/encoder.int8.onnx
+            decoder_path: /old/models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/decoder.int8.onnx
+            joiner_path: ""
+            num_threads: 2
+            decoding_method: greedy_search
+            feature_dim: 80
+            provider: cpu
+        llm:
+          provider: ollama
+          base_url: http://localhost:11434
+          model: qwen3:8b
+          timeout_seconds: 30
+        """.write(to: configURL, atomically: true, encoding: .utf8)
+
+        _ = try EmbeddedRuntimeConfigGenerator().generateConfig()
+
+        let contents = try String(contentsOf: configURL, encoding: .utf8)
+        XCTAssertTrue(contents.contains("model_profile: paraformer-bilingual"))
+        XCTAssertTrue(contents.contains("tokens_path: \(bilingualDir.appendingPathComponent("tokens.txt").path)"))
+        XCTAssertFalse(contents.contains("tokens_path: \(trilingualDir.appendingPathComponent("tokens.txt").path)"))
     }
 
     func testRuntimeConfigGeneratorDoesNotDuplicateProviderInSavedFourSpaceConfig() throws {

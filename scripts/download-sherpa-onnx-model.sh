@@ -2,14 +2,33 @@
 set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
+MODEL_PROFILE="${SHERPA_ONNX_MODEL_PROFILE:-trilingual}"
 MODEL_REVISION="${SHERPA_ONNX_MODEL_REVISION:-main}"
-MODEL_NAME="${SHERPA_ONNX_MODEL_NAME:-sherpa-onnx-streaming-paraformer-trilingual-zh-cantonese-en}"
-MODEL_REPO="${SHERPA_ONNX_MODEL_REPO:-csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20}"
-MODEL_DIR="${SHERPA_ONNX_MODEL_DIR:-$ROOT_DIR/models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en}"
+case "$MODEL_PROFILE" in
+  trilingual)
+    DEFAULT_MODEL_NAME="sherpa-onnx-streaming-paraformer-trilingual-zh-cantonese-en"
+    DEFAULT_MODEL_REPO="csukuangfj/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20"
+    DEFAULT_MODEL_DIR="$ROOT_DIR/models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en"
+    DEFAULT_BASE_URL=""
+    ;;
+  bilingual)
+    DEFAULT_MODEL_NAME="sherpa-onnx-streaming-paraformer-bilingual-zh-en"
+    DEFAULT_MODEL_REPO="csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en"
+    DEFAULT_MODEL_DIR="$ROOT_DIR/models/sherpa-onnx/streaming-paraformer-bilingual-zh-en"
+    DEFAULT_BASE_URL="https://huggingface.co/$DEFAULT_MODEL_REPO/resolve/$MODEL_REVISION"
+    ;;
+  *)
+    printf 'error: unsupported SHERPA_ONNX_MODEL_PROFILE %s; use trilingual or bilingual\n' "$MODEL_PROFILE" >&2
+    exit 2
+    ;;
+esac
+MODEL_NAME="${SHERPA_ONNX_MODEL_NAME:-$DEFAULT_MODEL_NAME}"
+MODEL_REPO="${SHERPA_ONNX_MODEL_REPO:-$DEFAULT_MODEL_REPO}"
+MODEL_DIR="${SHERPA_ONNX_MODEL_DIR:-$DEFAULT_MODEL_DIR}"
 ARCHIVE_NAME="${SHERPA_ONNX_MODEL_ARCHIVE_NAME:-${MODEL_NAME}.tar.bz2}"
 ARCHIVE_URL="${SHERPA_ONNX_MODEL_ARCHIVE_URL:-https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${ARCHIVE_NAME}}"
 ARCHIVE_PATH="${SHERPA_ONNX_MODEL_ARCHIVE_PATH:-$ROOT_DIR/build/sherpa-onnx-models/$ARCHIVE_NAME}"
-BASE_URL="${SHERPA_ONNX_MODEL_BASE_URL:-}"
+BASE_URL="${SHERPA_ONNX_MODEL_BASE_URL:-$DEFAULT_BASE_URL}"
 
 mkdir -p "$MODEL_DIR" "$(dirname "$ARCHIVE_PATH")"
 

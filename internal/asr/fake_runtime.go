@@ -100,6 +100,8 @@ type streamState struct {
 	expectedSequence   int
 	finalTexts         []string
 	partialTexts       []string
+	committedTexts     []string
+	pendingPartialText string
 }
 
 func fakePartialForFrame(frameNumber int) (string, bool) {

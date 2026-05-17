@@ -60,6 +60,46 @@ enum ASRModeOption: String, CaseIterable, Identifiable {
     }
 }
 
+enum ONNXModelProfileOption: String, CaseIterable, Identifiable {
+    case paraformerTrilingual = "paraformer-trilingual"
+    case paraformerBilingual = "paraformer-bilingual"
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .paraformerTrilingual:
+            return "Trilingual"
+        case .paraformerBilingual:
+            return "Bilingual zh-en"
+        }
+    }
+
+    var modelDirectory: String {
+        "models/sherpa-onnx/\(directoryName)"
+    }
+
+    var directoryName: String {
+        switch self {
+        case .paraformerTrilingual:
+            return "streaming-paraformer-trilingual-zh-cantonese-en"
+        case .paraformerBilingual:
+            return "streaming-paraformer-bilingual-zh-en"
+        }
+    }
+
+    static func inferred(from config: ControlSherpaONNXConfig) -> ONNXModelProfileOption {
+        if let profile = ONNXModelProfileOption(rawValue: config.modelProfile) {
+            return profile
+        }
+        if config.tokensPath.contains("streaming-paraformer-bilingual-zh-en") ||
+            config.encoderPath.contains("streaming-paraformer-bilingual-zh-en") {
+            return .paraformerBilingual
+        }
+        return .paraformerTrilingual
+    }
+}
+
 enum ServiceDisplayState: String, Equatable {
     case listening
     case paired
@@ -572,6 +612,7 @@ struct ControlConfig: Equatable {
                 lm: ""
             ),
             sherpaONNX: ControlSherpaONNXConfig(
+                modelProfile: ONNXModelProfileOption.paraformerTrilingual.rawValue,
                 modelType: "paraformer",
                 precision: "int8",
                 tokensPath: "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/tokens.txt",
@@ -691,6 +732,7 @@ struct ControlASRModelsConfig: Codable, Equatable {
 }
 
 struct ControlSherpaONNXConfig: Codable, Equatable {
+    var modelProfile: String
     var modelType: String
     var precision: String
     var tokensPath: String
@@ -703,6 +745,7 @@ struct ControlSherpaONNXConfig: Codable, Equatable {
     var provider: String
 
     static let `default` = ControlSherpaONNXConfig(
+        modelProfile: ONNXModelProfileOption.paraformerTrilingual.rawValue,
         modelType: "paraformer",
         precision: "int8",
         tokensPath: "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/tokens.txt",
@@ -716,6 +759,7 @@ struct ControlSherpaONNXConfig: Codable, Equatable {
     )
 
     enum CodingKeys: String, CodingKey {
+        case modelProfile = "model_profile"
         case modelType = "model_type"
         case precision
         case tokensPath = "tokens_path"
@@ -729,6 +773,7 @@ struct ControlSherpaONNXConfig: Codable, Equatable {
     }
 
     init(
+        modelProfile: String = ONNXModelProfileOption.paraformerTrilingual.rawValue,
         modelType: String,
         precision: String,
         tokensPath: String,
@@ -740,6 +785,7 @@ struct ControlSherpaONNXConfig: Codable, Equatable {
         featureDim: Int,
         provider: String
     ) {
+        self.modelProfile = modelProfile
         self.modelType = modelType
         self.precision = precision
         self.tokensPath = tokensPath
@@ -755,6 +801,7 @@ struct ControlSherpaONNXConfig: Codable, Equatable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let joinerPath = try container.decodeIfPresent(String.self, forKey: .joinerPath) ?? ""
+        modelProfile = try container.decodeIfPresent(String.self, forKey: .modelProfile) ?? ""
         modelType = try container.decodeIfPresent(String.self, forKey: .modelType) ?? (joinerPath.isEmpty ? "paraformer" : "transducer")
         precision = try container.decodeIfPresent(String.self, forKey: .precision) ?? "int8"
         tokensPath = try container.decode(String.self, forKey: .tokensPath)
@@ -765,6 +812,36 @@ struct ControlSherpaONNXConfig: Codable, Equatable {
         decodingMethod = try container.decode(String.self, forKey: .decodingMethod)
         featureDim = try container.decode(Int.self, forKey: .featureDim)
         provider = try container.decode(String.self, forKey: .provider)
+        if modelProfile.isEmpty {
+            modelProfile = ONNXModelProfileOption.inferred(from: self).rawValue
+        }
+    }
+
+    mutating func apply(profile: ONNXModelProfileOption) {
+        let baseDirectory = sherpaModelsBaseDirectory()
+        modelProfile = profile.rawValue
+        modelType = "paraformer"
+        precision = "int8"
+        let modelDirectory = baseDirectory.map { "\($0)/\(profile.directoryName)" } ?? profile.modelDirectory
+        tokensPath = "\(modelDirectory)/tokens.txt"
+        encoderPath = "\(modelDirectory)/encoder.int8.onnx"
+        decoderPath = "\(modelDirectory)/decoder.int8.onnx"
+        joinerPath = ""
+        decodingMethod = "greedy_search"
+        featureDim = 80
+    }
+
+    private func sherpaModelsBaseDirectory() -> String? {
+        for path in [tokensPath, encoderPath, decoderPath] where path.contains("/models/sherpa-onnx/") {
+            if let range = path.range(of: "/models/sherpa-onnx/") {
+                var base = String(path[..<range.upperBound])
+                if base.hasSuffix("/") {
+                    base.removeLast()
+                }
+                return base
+            }
+        }
+        return nil
     }
 }
 
@@ -1351,7 +1428,17 @@ final class AppShellViewModel: ObservableObject {
         defer { isBusy = false }
 
         do {
-            config = try await client.saveConfig(config)
+            var updatedConfig = config
+            if ASRModeOption.normalizedProvider(updatedConfig.asr.provider) == ASRModeOption.onnx.rawValue {
+                updatedConfig.asr.provider = ASRModeOption.onnx.rawValue
+                updatedConfig.asr.mode = "streaming"
+                let profile = ONNXModelProfileOption.inferred(from: updatedConfig.asr.sherpaONNX)
+                updatedConfig.asr.sherpaONNX.apply(profile: profile)
+            } else {
+                updatedConfig.asr.provider = ASRModeOption.funasr.rawValue
+                updatedConfig.asr.mode = "2pass"
+            }
+            config = try await client.saveConfig(updatedConfig)
             lastUpdated = nowProvider()
             lastErrorMessage = nil
         } catch let error as ControlAPIClientError {
@@ -1705,7 +1792,12 @@ struct SettingsInterfacesPanel: View {
             return ("Unknown", .secondary)
         }
         if asr.ready {
-            return ("Healthy · \(viewModel.config.asr.provider)", .green)
+            let provider = ASRModeOption.normalizedProvider(viewModel.config.asr.provider)
+            if provider == ASRModeOption.onnx.rawValue {
+                let profile = ONNXModelProfileOption.inferred(from: viewModel.config.asr.sherpaONNX)
+                return ("Healthy · ONNX · \(profile.title)", .green)
+            }
+            return ("Healthy · FunASR", .green)
         }
         return (asr.error.map { "Error · \($0)" } ?? "Unavailable", .red)
     }
@@ -1751,7 +1843,30 @@ struct SettingsInterfacesPanel: View {
                         .labelsHidden()
                         .pickerStyle(.menu)
                     }
-                    .gridCellColumns(3)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("ONNX Model")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Picker(
+                            "ONNX Model",
+                            selection: Binding(
+                                get: { ONNXModelProfileOption.inferred(from: viewModel.config.asr.sherpaONNX).rawValue },
+                                set: { value in
+                                    if let profile = ONNXModelProfileOption(rawValue: value) {
+                                        viewModel.config.asr.sherpaONNX.apply(profile: profile)
+                                    }
+                                }
+                            )
+                        ) {
+                            ForEach(ONNXModelProfileOption.allCases) { option in
+                                Text(option.title).tag(option.rawValue)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .disabled(ASRModeOption.normalizedProvider(viewModel.config.asr.provider) != ASRModeOption.onnx.rawValue)
+                    }
+                    .gridCellColumns(2)
                 }
             }
 

@@ -192,6 +192,156 @@ func TestProxyRuntimeTranslatesFunASRResponsesIntoStableSidecarMessages(t *testi
 	}
 }
 
+func TestProxyRuntimePreservesPartialBeforeFinalAfterLongSilence(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		conn, err := acceptWebSocket(w, req)
+		if err != nil {
+			t.Fatalf("acceptWebSocket() error = %v", err)
+		}
+		defer conn.Close()
+
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			if err == io.EOF {
+				return
+			}
+			t.Fatalf("readFrameWithOpcode(config) error = %v", err)
+		}
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			t.Fatalf("readFrameWithOpcode(audio-1) error = %v", err)
+		}
+		if err := conn.WriteJSON(map[string]any{"mode": "2pass-online", "text": "打开浏览器", "is_final": false}); err != nil {
+			t.Fatalf("WriteJSON(partial-before-silence) error = %v", err)
+		}
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			t.Fatalf("readFrameWithOpcode(audio-2) error = %v", err)
+		}
+		if err := conn.WriteJSON(map[string]any{"mode": "2pass-offline", "text": "搜索天气", "is_final": true}); err != nil {
+			t.Fatalf("WriteJSON(final-after-silence) error = %v", err)
+		}
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			t.Fatalf("readFrameWithOpcode(stop) error = %v", err)
+		}
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			t.Fatalf("readFrameWithOpcode(flush) error = %v", err)
+		}
+	}))
+	defer upstream.Close()
+
+	runtime := NewProxyRuntime(ProxyRuntimeConfig{UpstreamURL: websocketURLFromHTTP(t, upstream.URL), Mode: "2pass"})
+	serverURL, shutdown := startRuntimeServer(t, runtime)
+	defer shutdown()
+
+	client := NewClient(Config{URL: serverURL, Version: protocol.VersionV1Alpha1, Timeout: 2 * time.Second})
+	result, err := client.Transcribe(context.Background(), DefaultAudioMetadata(), [][]byte{make([]byte, 640), make([]byte, 640)})
+	if err != nil {
+		t.Fatalf("Transcribe() error = %v", err)
+	}
+	if got, want := result.TextFinal.Text, "打开浏览器搜索天气"; got != want {
+		t.Fatalf("TextFinal.Text = %q, want %q", got, want)
+	}
+}
+
+func TestProxyRuntimeCommitsPartialWhenNextPartialStartsNewSegment(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		conn, err := acceptWebSocket(w, req)
+		if err != nil {
+			t.Fatalf("acceptWebSocket() error = %v", err)
+		}
+		defer conn.Close()
+
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			if err == io.EOF {
+				return
+			}
+			t.Fatalf("readFrameWithOpcode(config) error = %v", err)
+		}
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			t.Fatalf("readFrameWithOpcode(audio-1) error = %v", err)
+		}
+		if err := conn.WriteJSON(map[string]any{"mode": "2pass-online", "text": "打开浏览器", "is_final": false}); err != nil {
+			t.Fatalf("WriteJSON(first-partial) error = %v", err)
+		}
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			t.Fatalf("readFrameWithOpcode(audio-2) error = %v", err)
+		}
+		if err := conn.WriteJSON(map[string]any{"mode": "2pass-online", "text": "搜索", "is_final": false}); err != nil {
+			t.Fatalf("WriteJSON(reset-partial) error = %v", err)
+		}
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			t.Fatalf("readFrameWithOpcode(audio-3) error = %v", err)
+		}
+		if err := conn.WriteJSON(map[string]any{"mode": "2pass-offline", "text": "搜索天气", "is_final": true}); err != nil {
+			t.Fatalf("WriteJSON(final) error = %v", err)
+		}
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			t.Fatalf("readFrameWithOpcode(stop) error = %v", err)
+		}
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			t.Fatalf("readFrameWithOpcode(flush) error = %v", err)
+		}
+	}))
+	defer upstream.Close()
+
+	runtime := NewProxyRuntime(ProxyRuntimeConfig{UpstreamURL: websocketURLFromHTTP(t, upstream.URL), Mode: "2pass"})
+	serverURL, shutdown := startRuntimeServer(t, runtime)
+	defer shutdown()
+
+	client := NewClient(Config{URL: serverURL, Version: protocol.VersionV1Alpha1, Timeout: 2 * time.Second})
+	result, err := client.Transcribe(context.Background(), DefaultAudioMetadata(), [][]byte{make([]byte, 640), make([]byte, 640), make([]byte, 640)})
+	if err != nil {
+		t.Fatalf("Transcribe() error = %v", err)
+	}
+	if got, want := result.TextFinal.Text, "打开浏览器搜索天气"; got != want {
+		t.Fatalf("TextFinal.Text = %q, want %q", got, want)
+	}
+}
+
+func TestProxyRuntimeIgnoresEmptyFinalAndFallsBackToPreviousPartial(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		conn, err := acceptWebSocket(w, req)
+		if err != nil {
+			t.Fatalf("acceptWebSocket() error = %v", err)
+		}
+		defer conn.Close()
+
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			if err == io.EOF {
+				return
+			}
+			t.Fatalf("readFrameWithOpcode(config) error = %v", err)
+		}
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			t.Fatalf("readFrameWithOpcode(audio) error = %v", err)
+		}
+		if err := conn.WriteJSON(map[string]any{"mode": "2pass-online", "text": "打开浏览器", "is_final": false}); err != nil {
+			t.Fatalf("WriteJSON(partial) error = %v", err)
+		}
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			t.Fatalf("readFrameWithOpcode(stop) error = %v", err)
+		}
+		if _, _, err := conn.readFrameWithOpcode(context.Background()); err != nil {
+			t.Fatalf("readFrameWithOpcode(flush) error = %v", err)
+		}
+		if err := conn.WriteJSON(map[string]any{"mode": "2pass-offline", "text": "", "is_final": true}); err != nil {
+			t.Fatalf("WriteJSON(empty-final) error = %v", err)
+		}
+	}))
+	defer upstream.Close()
+
+	runtime := NewProxyRuntime(ProxyRuntimeConfig{UpstreamURL: websocketURLFromHTTP(t, upstream.URL), Mode: "2pass"})
+	serverURL, shutdown := startRuntimeServer(t, runtime)
+	defer shutdown()
+
+	client := NewClient(Config{URL: serverURL, Version: protocol.VersionV1Alpha1, Timeout: 2 * time.Second})
+	result, err := client.Transcribe(context.Background(), DefaultAudioMetadata(), [][]byte{make([]byte, 640)})
+	if err != nil {
+		t.Fatalf("Transcribe() error = %v", err)
+	}
+	if got, want := result.TextFinal.Text, "打开浏览器"; got != want {
+		t.Fatalf("TextFinal.Text = %q, want %q", got, want)
+	}
+}
+
 func TestProxyRuntimeReturnsTypedSidecarUnavailableWhenUpstreamCannotBeReached(t *testing.T) {
 	runtime := NewProxyRuntime(ProxyRuntimeConfig{UpstreamURL: "ws://127.0.0.1:1", Mode: "2pass"})
 	serverURL, shutdown := startRuntimeServer(t, runtime)
@@ -210,7 +360,7 @@ func TestProxyRuntimeReturnsTypedSidecarUnavailableWhenUpstreamCannotBeReached(t
 	}
 }
 
-func TestProxyRuntimeReturnsTypedSidecarUnavailableForEmptyUpstreamFinal(t *testing.T) {
+func TestProxyRuntimeReturnsEmptyTextWhenUpstreamFinalIsEmptyWithoutFallback(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		conn, err := acceptWebSocket(w, req)
 		if err != nil {
@@ -261,15 +411,12 @@ func TestProxyRuntimeReturnsTypedSidecarUnavailableForEmptyUpstreamFinal(t *test
 	defer shutdown()
 
 	client := NewClient(Config{URL: serverURL, Version: protocol.VersionV1Alpha1, Timeout: 2 * time.Second})
-	_, err := client.Transcribe(context.Background(), DefaultAudioMetadata(), [][]byte{make([]byte, 640)})
-	if err == nil {
-		t.Fatal("Transcribe() error = nil, want typed empty final error")
+	result, err := client.Transcribe(context.Background(), DefaultAudioMetadata(), [][]byte{make([]byte, 640)})
+	if err != nil {
+		t.Fatalf("Transcribe() error = %v", err)
 	}
-	if got, want := protocol.ErrorCodeOf(err), protocol.ErrorCodeSidecarUnavailable; got != want {
-		t.Fatalf("ErrorCodeOf() = %q, want %q", got, want)
-	}
-	if !strings.Contains(err.Error(), "empty final transcript") {
-		t.Fatalf("error = %q, want empty final transcript guidance", err)
+	if got := result.TextFinal.Text; got != "" {
+		t.Fatalf("TextFinal.Text = %q, want empty fallback", got)
 	}
 }
 

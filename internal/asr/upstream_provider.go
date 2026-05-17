@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 	"time"
@@ -179,48 +178,13 @@ func drainUpstreamResult(ctx context.Context, conn *websocketConn, result *Resul
 func awaitFinalResult(ctx context.Context, conn *websocketConn, result *Result) error {
 	deadline := time.Now().Add(upstreamFinalizationTimeout)
 	for {
-	if time.Now().After(deadline) {
-		if result.Transcript != "" || len(result.FinalSegments) > 0 {
-			result.Transcript = joinFinalSegments(result.FinalSegments)
-			return nil
-		}
-		// FunASR offline mode may return is_final:false for the
-		// complete result; promote partials to finals on timeout.
-		if len(result.Partials) > 0 {
-			result.FinalSegments = make([]protocol.ASRFinal, len(result.Partials))
-			for i, p := range result.Partials {
-				result.FinalSegments[i] = protocol.ASRFinal{
-					Envelope:     p.Envelope,
-					SessionID:    p.SessionID,
-					StreamID:     p.StreamID,
-					SegmentIndex: i + 1,
-					Text:         p.Text,
-				}
-			}
-			result.Transcript = joinFinalSegments(result.FinalSegments)
-			return nil
-		}
-		return context.DeadlineExceeded
-	}
-
-		readCtx, cancel := context.WithTimeout(ctx, upstreamQuietWindow)
-		payload, opcode, err := conn.readFrameWithOpcode(readCtx)
-		cancel()
-		if err != nil {
-			if isTimeout(err) {
-				if result.Transcript != "" || len(result.FinalSegments) > 0 {
-					result.Transcript = joinFinalSegments(result.FinalSegments)
-					return nil
-				}
-				continue
-			}
-		if errors.Is(err, io.EOF) {
-			// FunASR offline mode returns is_final:false for the complete
-			// transcription, so we may have partials but no final segments.
+		if time.Now().After(deadline) {
 			if result.Transcript != "" || len(result.FinalSegments) > 0 {
 				result.Transcript = joinFinalSegments(result.FinalSegments)
 				return nil
 			}
+			// FunASR offline mode may return is_final:false for the
+			// complete result; promote partials to finals on timeout.
 			if len(result.Partials) > 0 {
 				result.FinalSegments = make([]protocol.ASRFinal, len(result.Partials))
 				for i, p := range result.Partials {
@@ -235,8 +199,43 @@ func awaitFinalResult(ctx context.Context, conn *websocketConn, result *Result) 
 				result.Transcript = joinFinalSegments(result.FinalSegments)
 				return nil
 			}
-			return err
+			return context.DeadlineExceeded
 		}
+
+		readCtx, cancel := context.WithTimeout(ctx, upstreamQuietWindow)
+		payload, opcode, err := conn.readFrameWithOpcode(readCtx)
+		cancel()
+		if err != nil {
+			if isTimeout(err) {
+				if result.Transcript != "" || len(result.FinalSegments) > 0 {
+					result.Transcript = joinFinalSegments(result.FinalSegments)
+					return nil
+				}
+				continue
+			}
+			if errors.Is(err, io.EOF) {
+				// FunASR offline mode returns is_final:false for the complete
+				// transcription, so we may have partials but no final segments.
+				if result.Transcript != "" || len(result.FinalSegments) > 0 {
+					result.Transcript = joinFinalSegments(result.FinalSegments)
+					return nil
+				}
+				if len(result.Partials) > 0 {
+					result.FinalSegments = make([]protocol.ASRFinal, len(result.Partials))
+					for i, p := range result.Partials {
+						result.FinalSegments[i] = protocol.ASRFinal{
+							Envelope:     p.Envelope,
+							SessionID:    p.SessionID,
+							StreamID:     p.StreamID,
+							SegmentIndex: i + 1,
+							Text:         p.Text,
+						}
+					}
+					result.Transcript = joinFinalSegments(result.FinalSegments)
+					return nil
+				}
+				return err
+			}
 			return err
 		}
 		if opcode != 0x1 {
@@ -257,7 +256,7 @@ func appendFunASRTranscript(payload []byte, result *Result) error {
 	text := strings.TrimSpace(response.Text)
 	if text == "" {
 		if response.IsFinal {
-			return fmt.Errorf("upstream FunASR returned empty final transcript")
+			return nil
 		}
 		return nil
 	}

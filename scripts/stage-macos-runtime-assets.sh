@@ -55,10 +55,14 @@ rsync -a --delete "$MODEL_SOURCE_DIR/" "$MODEL_DEST_DIR/"
 : > "$RESOURCE_DIR/hotwords.txt"
 
 SHERPA_DEFAULT_MODEL_DIR="$SHERPA_MODEL_SOURCE_DIR/streaming-paraformer-trilingual-zh-cantonese-en"
+SHERPA_BILINGUAL_MODEL_DIR="$SHERPA_MODEL_SOURCE_DIR/streaming-paraformer-bilingual-zh-en"
 for required in \
   "$SHERPA_DEFAULT_MODEL_DIR/tokens.txt" \
   "$SHERPA_DEFAULT_MODEL_DIR/encoder.int8.onnx" \
-  "$SHERPA_DEFAULT_MODEL_DIR/decoder.int8.onnx"
+  "$SHERPA_DEFAULT_MODEL_DIR/decoder.int8.onnx" \
+  "$SHERPA_BILINGUAL_MODEL_DIR/tokens.txt" \
+  "$SHERPA_BILINGUAL_MODEL_DIR/encoder.int8.onnx" \
+  "$SHERPA_BILINGUAL_MODEL_DIR/decoder.int8.onnx"
 do
   if [ ! -f "$required" ]; then
     printf 'error: missing embedded sherpa-onnx asset %s\n' "$required" >&2

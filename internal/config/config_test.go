@@ -219,6 +219,9 @@ func TestLoadAcceptsSherpaONNXStreamingConfig(t *testing.T) {
 	if cfg.ASR.SherpaONNX.Precision != "int8" {
 		t.Fatalf("Precision = %q, want int8 default", cfg.ASR.SherpaONNX.Precision)
 	}
+	if cfg.ASR.SherpaONNX.ModelProfile != "paraformer-trilingual" {
+		t.Fatalf("ModelProfile = %q, want paraformer-trilingual default", cfg.ASR.SherpaONNX.ModelProfile)
+	}
 }
 
 func TestLoadAcceptsSherpaONNXFP32Precision(t *testing.T) {

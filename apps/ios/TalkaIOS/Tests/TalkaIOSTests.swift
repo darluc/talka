@@ -731,6 +731,51 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertNil(viewModel.lastAudioDiagnostic)
     }
 
+    func testStartRecordingTimesOutHangingAudioStart() async {
+        let streamClient = HangingAudioStreamClient(hangOnStart: true)
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(),
+            identityStore: FakePairedIdentityStore(),
+            audioStreamClient: streamClient,
+            microphoneSource: FakeMicrophoneSource(),
+            audioOperationTimeoutNanoseconds: 10_000_000
+        )
+
+        await viewModel.startRecording()
+
+        XCTAssertEqual(viewModel.recordingState, .failed)
+        XCTAssertEqual(viewModel.audioLevel, 0)
+        XCTAssertEqual(viewModel.lastErrorMessage, "Audio streaming timed out. Reconnect the Mac and try again.")
+    }
+
+    func testStopRecordingTimesOutInFlightAudioFrameInsteadOfStayingRecording() async {
+        let streamClient = HangingAudioStreamClient(hangOnFrame: true)
+        let microphoneSource = FakeMicrophoneSource()
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(),
+            identityStore: FakePairedIdentityStore(),
+            audioStreamClient: streamClient,
+            microphoneSource: microphoneSource,
+            stopTailCaptureNanoseconds: 0,
+            audioOperationTimeoutNanoseconds: 10_000_000
+        )
+
+        await viewModel.startRecording()
+        microphoneSource.emit(Data(repeating: 3, count: TalkaAudioFormat.frameByteCount))
+        while !streamClient.frameStarted {
+            await Task.yield()
+        }
+
+        await viewModel.stopRecording()
+
+        XCTAssertEqual(viewModel.recordingState, .failed)
+        XCTAssertEqual(viewModel.audioLevel, 0)
+        XCTAssertEqual(viewModel.lastErrorMessage, "Audio streaming timed out. Reconnect the Mac and try again.")
+        XCTAssertTrue(microphoneSource.didStop)
+    }
+
     func testProductionEnvironmentUsesBonjourDiscoveryAndSecureTransportDefaults() {
         let environment = RemoteMicShellEnvironment.production()
 
@@ -757,6 +802,33 @@ final class TalkaIOSTests: XCTestCase {
         try await client.sendAudioStop(lastSequence: 1)
 
         XCTAssertEqual(recordedEncryptedSequences(in: connector), [1, 2, 3, 4, 5, 6])
+        XCTAssertEqual(connector.createdTasks.count, 2)
+    }
+
+    func testSecureAudioStreamClientDoesNotConsumeEncryptedSequenceWhenSocketSendFails() async throws {
+        let sessionStore = SecureAudioSessionStore()
+        sessionStore.save(makeSecureAudioSession(id: "session-a", url: "ws://127.0.0.1/session-a"))
+        let connector = RecordingSecureAudioWebSocketConnector()
+        let client = SecureAudioStreamClient(
+            sessionStore: sessionStore,
+            webSocketConnector: connector
+        )
+
+        try await client.sendAudioStart(metadata: .talkaDefault)
+        let firstTask = try XCTUnwrap(connector.createdTasks.first)
+        firstTask.queuedSendResults = [.failure(URLError(.networkConnectionLost))]
+
+        do {
+            try await client.sendAudioFrame(sequence: 1, payload: Data([1, 2, 3]))
+            XCTFail("sendAudioFrame succeeded, want socket send failure")
+        } catch {
+            // Expected: the websocket dropped the frame before it reached the Mac.
+        }
+        try await client.sendAudioCancel(reason: "send_failed")
+
+        try await client.sendAudioStart(metadata: .talkaDefault)
+
+        XCTAssertEqual(recordedEncryptedSequences(in: connector), [1, 2])
         XCTAssertEqual(connector.createdTasks.count, 2)
     }
 
@@ -1414,6 +1486,41 @@ private final class FakePairedIdentityStore: PairedIdentityStoring {
         }
     }
 
+    private final class HangingAudioStreamClient: AudioStreamClient {
+        private let hangOnStart: Bool
+        private let hangOnFrame: Bool
+        private(set) var frameStarted = false
+
+        init(hangOnStart: Bool = false, hangOnFrame: Bool = false) {
+            self.hangOnStart = hangOnStart
+            self.hangOnFrame = hangOnFrame
+        }
+
+        func sendAudioStart(metadata: AudioStreamMetadata) async throws {
+            _ = metadata
+            if hangOnStart {
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+            }
+        }
+
+        func sendAudioFrame(sequence: Int, payload: Data) async throws {
+            _ = sequence
+            _ = payload
+            frameStarted = true
+            if hangOnFrame {
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+            }
+        }
+
+        func sendAudioStop(lastSequence: Int) async throws {
+            _ = lastSequence
+        }
+
+        func sendAudioCancel(reason: String) async throws {
+            _ = reason
+        }
+    }
+
     private struct ThrowingAudioPCMConverter: AudioPCMConverting {
         let error: Error
 
@@ -1535,6 +1642,7 @@ private final class RecordingSecureAudioWebSocketTask: SecureAudioWebSocketTaski
     private(set) var cancelCalls = 0
     private(set) var receiveCalls = 0
     private(set) var eventLog: [String] = []
+    var queuedSendResults: [Result<Void, Error>] = []
     var queuedReceiveResults: [Result<String, Error>] = []
 
     init(url: URL) {
@@ -1547,6 +1655,9 @@ private final class RecordingSecureAudioWebSocketTask: SecureAudioWebSocketTaski
     }
 
     func send(_ text: String) async throws {
+        if !queuedSendResults.isEmpty {
+            try queuedSendResults.removeFirst().get()
+        }
         sentTexts.append(text)
         eventLog.append("send")
     }

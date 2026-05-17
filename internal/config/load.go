@@ -150,6 +150,9 @@ func (cfg Config) Validate(baseDir string) error {
 			validatePath("asr.hotword_path", cfg.ASR.HotwordPath)
 		}
 	case "onnx":
+		if strings.TrimSpace(cfg.ASR.SherpaONNX.ModelProfile) == "" {
+			cfg.ASR.SherpaONNX.ModelProfile = "paraformer-trilingual"
+		}
 		modelType := strings.TrimSpace(cfg.ASR.SherpaONNX.ModelType)
 		if modelType == "" {
 			if strings.TrimSpace(cfg.ASR.SherpaONNX.JoinerPath) != "" {

@@ -544,6 +544,62 @@ func TestConfigPutRebuildsPipelineWithUpdatedConfig(t *testing.T) {
 	}
 }
 
+func TestConfigPutDefersShutdownOfPipelineUsedByActiveAudioStream(t *testing.T) {
+	cfg, cfgPath := mustConfig(t)
+	oldASR := newShutdownProbeASR()
+	oldPipeline := NewPipeline(oldASR, newHealthProbeLLM(nil), inject.NewFakeInjector())
+	service, err := NewWithPipeline(cfg, cfgPath, nil, oldPipeline)
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
+	}
+	releasePipeline := service.retainPipeline(oldPipeline)
+	server := httptest.NewServer(service.Handler())
+	defer server.Close()
+	defer func() { releasePipeline() }()
+
+	updated := cfg
+	updated.LLM.Model = "qwen3.5:4b"
+	newPipeline := NewPipeline(newHealthProbeASR(nil), newHealthProbeLLM(nil), inject.NewFakeInjector())
+	previousBuilder := buildPipelineFromConfig
+	buildPipelineFromConfig = func(cfg config.Config, configDir string) (*Pipeline, error) {
+		return newPipeline, nil
+	}
+	t.Cleanup(func() { buildPipelineFromConfig = previousBuilder })
+
+	body, err := json.Marshal(updated)
+	if err != nil {
+		t.Fatalf("Marshal(updated) error = %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPut, server.URL+"/v1/config", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT /v1/config error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		payload, _ := io.ReadAll(resp.Body)
+		t.Fatalf("PUT /v1/config status = %d body = %s", resp.StatusCode, payload)
+	}
+
+	select {
+	case <-oldASR.shutdownCalled:
+		t.Fatal("old pipeline was shut down while retained by an active audio stream")
+	default:
+	}
+
+	releasePipeline()
+	releasePipeline = func() {}
+
+	select {
+	case <-oldASR.shutdownCalled:
+	case <-time.After(time.Second):
+		t.Fatal("old pipeline was not shut down after active audio stream released it")
+	}
+}
+
 func TestRecordLatencyErrorStoresCodeWithoutPrivateErrorText(t *testing.T) {
 	cfg, cfgPath := mustConfig(t)
 	service, err := NewWithPipeline(cfg, cfgPath, nil, NewPipeline(newHealthProbeASR(nil), newHealthProbeLLM(nil), inject.NewFakeInjector()))

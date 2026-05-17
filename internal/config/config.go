@@ -45,6 +45,7 @@ type ASRModelsConfig struct {
 }
 
 type SherpaONNXConfig struct {
+	ModelProfile   string `json:"model_profile" yaml:"model_profile"`
 	ModelType      string `json:"model_type" yaml:"model_type"`
 	Precision      string `json:"precision" yaml:"precision"`
 	TokensPath     string `json:"tokens_path" yaml:"tokens_path"`
@@ -108,6 +109,7 @@ func Default() Config {
 				LM:     "",
 			},
 			SherpaONNX: SherpaONNXConfig{
+				ModelProfile:   "paraformer-trilingual",
 				ModelType:      "paraformer",
 				Precision:      "int8",
 				TokensPath:     "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/tokens.txt",

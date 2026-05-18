@@ -48,14 +48,14 @@ else
   printf '[optional] ollama unavailable (expected for scaffold-only work)\n'
 fi
 
-if [ -f models/funasr/checksums.txt ]; then
-  printf '[ok] model manifest: models/funasr/checksums.txt\n'
+if [ -f models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/tokens.txt ]; then
+  printf '[ok] ONNX bilingual model: models/sherpa-onnx/streaming-paraformer-bilingual-zh-en\n'
 else
-  printf '[missing] model manifest: models/funasr/checksums.txt\n' >&2
+  printf '[missing] ONNX bilingual model: models/sherpa-onnx/streaming-paraformer-bilingual-zh-en\n' >&2
   missing=1
 fi
 
-for dir in models/funasr/paraformer-zh-onnx models/funasr/paraformer-zh-online-onnx models/funasr/fsmn-vad-onnx models/funasr/ct-punc-onnx models/funasr/itn-zh .sisyphus/evidence; do
+for dir in models/sherpa-onnx/streaming-paraformer-bilingual-zh-en third_party/sherpa-onnx/lib .sisyphus/evidence; do
   if [ -d "$dir" ]; then
     printf '[ok] expected directory: %s\n' "$dir"
   else

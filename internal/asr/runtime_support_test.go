@@ -8,9 +8,9 @@ import (
 func TestSanitizeRuntimeDiagnosticsRemovesBenignDownloadNoise(t *testing.T) {
 	raw := `
 sh: python: command not found
-I20260506 00:37:20.599792 funasr-wss-server-2pass.cpp:238] Failed to download model from modelscope. If you set local vad model path, you can ignore the errors.
-I20260506 00:37:20.612115 funasr-wss-server-2pass.cpp:523] hotword path: /tmp/hotwords.txt
-F20260506 00:37:20.699792 funasr-wss-server-2pass.cpp:999] bind: Address already in use
+I20260506 00:37:20.599792 asr-runtime.cpp:238] Failed to download model from modelscope. If you set local vad model path, you can ignore the errors.
+I20260506 00:37:20.612115 asr-runtime.cpp:523] hotword path: /tmp/hotwords.txt
+F20260506 00:37:20.699792 asr-runtime.cpp:999] bind: Address already in use
 `
 
 	got := sanitizeRuntimeDiagnostics(raw)

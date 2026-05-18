@@ -120,7 +120,7 @@ case "$scenario" in
     if [ "$asr" = "fake" ]; then
       emit 'QA_PRECONDITION detail="Start Mac Talka with fake ASR/fake cleanup providers; ./scripts/smoke-fake-e2e.sh --full-session is host-only evidence and cannot satisfy physical QA."\n'
     else
-      emit 'QA_PRECONDITION detail="Start Mac Talka with real FunASR assets/runtime and Ollama available with the configured model."\n'
+      emit 'QA_PRECONDITION detail="Start Mac Talka with real sherpa-onnx assets/runtime and Ollama available with the configured model."\n'
     fi
     if [ "$simulate_ollama_timeout" = "true" ]; then
       emit 'QA_PRECONDITION detail="Configure the Mac-side cleanup provider to simulate or force an Ollama timeout."\n'
@@ -137,7 +137,7 @@ case "$scenario" in
     emit 'QA_STEP number=3 action="Save iPhone screen recording, Mac session logs, ASR final, cleanup final, and paste/insertion receipt."\n'
     emit 'QA_AUTOMATED marker=host_full_session command="./scripts/smoke-fake-e2e.sh --full-session" evidence="host-only regression coverage; not physical iPhone/Mac/Notes evidence"\n'
     if [ "$asr" = "real" ]; then
-      emit 'QA_BLOCKER code=physical_full_e2e_agent_required dependency="connected physical iPhone plus Mac Talka service plus real FunASR/Ollama plus focused %s" detail="No live physical iPhone microphone, encrypted Mac session logs, real ASR/Ollama final, or %s paste receipt was collected by this script invocation."\n' "$target_app" "$target_app"
+      emit 'QA_BLOCKER code=physical_full_e2e_agent_required dependency="connected physical iPhone plus Mac Talka service plus real sherpa-onnx/Ollama plus focused %s" detail="No live physical iPhone microphone, encrypted Mac session logs, real ASR/Ollama final, or %s paste receipt was collected by this script invocation."\n' "$target_app" "$target_app"
     else
       emit 'QA_BLOCKER code=physical_full_e2e_agent_required dependency="connected physical iPhone plus Mac Talka service plus fake ASR/cleanup providers plus focused %s" detail="No live physical iPhone microphone, encrypted Mac session logs, fake ASR/cleanup final, or %s paste receipt was collected by this script invocation."\n' "$target_app" "$target_app"
     fi

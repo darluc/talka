@@ -69,11 +69,10 @@
 			name = "Build Go Binaries";
 			outputPaths = (
 				"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/talka-server",
-				"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/talka-asr-runtime",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "cd ${PROJECT_DIR}/../../.. && ./scripts/build-go-binaries.sh --output-dir \"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\" --for-bundle --binaries \"talka-server talka-asr-runtime\"";
+			shellScript = "cd ${PROJECT_DIR}/../../.. && ./scripts/build-go-binaries.sh --output-dir \"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\" --for-bundle --binaries \"talka-server\"";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -91,7 +90,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "ROOT_DIR=\"${PROJECT_DIR}/../../..\"\nMODELS_SRC=\"${ROOT_DIR}/models/funasr\"\nMODELS_DST=\"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/models/funasr\"\nHOTWORDS_SRC=\"${ROOT_DIR}/hotwords.txt\"\nFUNASR_CPP_BINARY=\"${TALKA_FUNASR_CPP_BINARY:-${ROOT_DIR}/build/funasr-runtime/build/bin/funasr-wss-server-2pass}\"\nRESOURCE_DIR=\"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\n\nmkdir -p \"${MODELS_DST}\"\nfor model_dir in paraformer-zh-onnx paraformer-zh-online-onnx fsmn-vad-onnx ct-punc-onnx itn-zh; do\n  if [ -d \"${MODELS_SRC}/${model_dir}\" ]; then\n    cp -R \"${MODELS_SRC}/${model_dir}\" \"${MODELS_DST}/\"\n    echo \"Copied ${model_dir}\"\n  else\n    echo \"Warning: ${model_dir} not found, skipping\"\n  fi\ndone\n\nif [ -f \"${HOTWORDS_SRC}\" ]; then\n  cp \"${HOTWORDS_SRC}\" \"${RESOURCE_DIR}/hotwords.txt\"\n  echo \"Copied hotwords.txt\"\nfi\n\nif [ -x \"${FUNASR_CPP_BINARY}\" ]; then\n  cp -f \"${FUNASR_CPP_BINARY}\" \"${RESOURCE_DIR}/funasr-wss-server-2pass\"\n  chmod +x \"${RESOURCE_DIR}/funasr-wss-server-2pass\"\n  echo \"Copied funasr-wss-server-2pass\"\nelse\n  echo \"Warning: funasr-wss-server-2pass not found at ${FUNASR_CPP_BINARY}; embedded ASR will be unavailable\" >&2\nfi\n";
+			shellScript = "cd ${PROJECT_DIR}/../../.. && ./scripts/stage-macos-runtime-assets.sh --app-path \"${BUILT_PRODUCTS_DIR}/${WRAPPER_NAME}\"";
 		};
 /* End PBXBuildPhase - Copy Models section */
 

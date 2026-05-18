@@ -55,8 +55,8 @@ func TestStatusEndpointReturnsTypedJSON(t *testing.T) {
 	if payload.DeviceCount != 0 {
 		t.Fatalf("DeviceCount = %d, want 0", payload.DeviceCount)
 	}
-	if payload.ASR.Provider != "funasr" || payload.ASR.SampleRate != 16000 {
-		t.Fatalf("ASR status = %+v, want provider funasr and sample_rate 16000", payload.ASR)
+	if payload.ASR.Provider != "onnx" || payload.ASR.SampleRate != 16000 {
+		t.Fatalf("ASR status = %+v, want provider onnx and sample_rate 16000", payload.ASR)
 	}
 	if !payload.ASR.Ready || payload.ASR.Error != "" {
 		t.Fatalf("ASR readiness = ready:%v error:%q, want ready", payload.ASR.Ready, payload.ASR.Error)
@@ -278,7 +278,7 @@ func TestAccessibilityOpenReturnsActionableGuidance(t *testing.T) {
 func TestConfigEndpointRejectsInvalidConfig(t *testing.T) {
 	server := newWritableTestServer(t)
 
-	bad := `{"asr":{"provider":"funasr_embedded","runtime_path":"talka-asr-runtime","port":10095,"models":{"asr":"models/funasr/paraformer-zh-onnx","vad":"models/funasr/fsmn-vad-onnx","punc":"models/funasr/ct-punc-onnx","itn":"models/funasr/itn-zh"}}}`
+	bad := `{"asr":{"provider":"onnx","host":"127.0.0.1","port":10095,"mode":"streaming","sample_rate":8000,"startup_timeout_seconds":180,"sherpa_onnx":{"model_profile":"paraformer-bilingual","model_type":"paraformer","precision":"int8","tokens_path":"models/sherpa/tokens.txt","encoder_path":"models/sherpa/encoder.int8.onnx","decoder_path":"models/sherpa/decoder.int8.onnx","joiner_path":"","num_threads":2,"decoding_method":"greedy_search","feature_dim":80,"provider":"cpu"}}}`
 	resp := mustPut(t, server.URL+"/v1/config", strings.NewReader(bad))
 	defer resp.Body.Close()
 
@@ -903,16 +903,52 @@ func TestNewConfiguresProductionPipeline(t *testing.T) {
 	}
 }
 
-func TestMustConfigUsesEmbeddedProvider(t *testing.T) {
+func TestMustConfigUsesONNXProvider(t *testing.T) {
 	cfg, _ := mustConfig(t)
-	if cfg.ASR.Provider != "funasr" {
-		t.Fatalf("ASR.Provider = %q, want funasr", cfg.ASR.Provider)
+	if cfg.ASR.Provider != "onnx" {
+		t.Fatalf("ASR.Provider = %q, want onnx", cfg.ASR.Provider)
 	}
-	if cfg.ASR.RuntimePath == "" {
-		t.Fatal("ASR.RuntimePath is empty")
+	if cfg.ASR.SherpaONNX.ModelProfile != "paraformer-bilingual" {
+		t.Fatalf("ModelProfile = %q, want paraformer-bilingual", cfg.ASR.SherpaONNX.ModelProfile)
 	}
-	if cfg.ASR.Models.Online == "" {
-		t.Fatal("ASR.Models.Online is empty")
+	if cfg.ASR.SherpaONNX.EncoderPath == "" {
+		t.Fatal("ASR.SherpaONNX.EncoderPath is empty")
+	}
+}
+
+func TestShutdownClosesActiveIOSAudioWebSockets(t *testing.T) {
+	useFakeIOSPairingStore(t)
+	cfg, cfgPath := mustConfig(t)
+	service, err := NewWithPipeline(cfg, cfgPath, nil, NewPipeline(newHealthProbeASR(nil), newHealthProbeLLM(nil), inject.NewFakeInjector()))
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
+	}
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+	reader := bufio.NewReader(clientConn)
+	service.registerIOSAudioConn(serverConn)
+	if err := clientConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+
+	shutdownErr := make(chan error, 1)
+	go func() {
+		shutdownErr <- service.Shutdown(context.Background())
+	}()
+
+	payload, opcode, err := readServerWebSocketFrame(reader)
+	if err != nil {
+		t.Fatalf("readServerWebSocketFrame(close) error = %v", err)
+	}
+	if opcode != 0x8 {
+		t.Fatalf("opcode = %#x, payload = %q, want close frame", opcode, string(payload))
+	}
+	if len(payload) < 2 || binary.BigEndian.Uint16(payload[:2]) != 1001 {
+		t.Fatalf("close payload = %v, want close code 1001", payload)
+	}
+	if err := <-shutdownErr; err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
 	}
 }
 
@@ -937,43 +973,32 @@ func useFakeIOSPairingStore(t *testing.T) {
 func mustConfig(t *testing.T) (config.Config, string) {
 	t.Helper()
 	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, "models/funasr/paraformer-zh-onnx"), 0o755); err != nil {
-		t.Fatalf("MkdirAll(asr) error = %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "models/funasr/paraformer-zh-online-onnx"), 0o755); err != nil {
-		t.Fatalf("MkdirAll(online) error = %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "models/funasr/fsmn-vad-onnx"), 0o755); err != nil {
-		t.Fatalf("MkdirAll(vad) error = %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "models/funasr/ct-punc-onnx"), 0o755); err != nil {
-		t.Fatalf("MkdirAll(punc) error = %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, "models/funasr/itn-zh"), 0o755); err != nil {
-		t.Fatalf("MkdirAll(itn) error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "talka-asr-runtime"), []byte("runtime"), 0o755); err != nil {
-		t.Fatalf("WriteFile(runtime) error = %v", err)
-	}
+	modelDir := repoModelDir(t)
 
 	path := filepath.Join(root, "config.yaml")
-	contents := []byte(`server:
+	contents := []byte(fmt.Sprintf(`server:
   bind_host: 0.0.0.0
   port: 0
   service_name: Talka
 asr:
-  provider: funasr
-  runtime_path: talka-asr-runtime
+  provider: onnx
   host: 127.0.0.1
   port: 10095
-  mode: 2pass
+  mode: streaming
   sample_rate: 16000
-  models:
-    asr: models/funasr/paraformer-zh-onnx
-    online: models/funasr/paraformer-zh-online-onnx
-    vad: models/funasr/fsmn-vad-onnx
-    punc: models/funasr/ct-punc-onnx
-    itn: models/funasr/itn-zh
+  startup_timeout_seconds: 180
+  sherpa_onnx:
+    model_profile: paraformer-bilingual
+    model_type: paraformer
+    precision: int8
+    tokens_path: %s
+    encoder_path: %s
+    decoder_path: %s
+    joiner_path: ""
+    num_threads: 2
+    decoding_method: greedy_search
+    feature_dim: 80
+    provider: cpu
 llm:
   provider: ollama
   base_url: http://localhost:11434
@@ -986,7 +1011,7 @@ logging:
   level: info
   capture_audio: false
   capture_transcript: false
-`)
+`, filepath.Join(modelDir, "tokens.txt"), filepath.Join(modelDir, "encoder.int8.onnx"), filepath.Join(modelDir, "decoder.int8.onnx")))
 
 	if err := os.WriteFile(path, contents, 0o644); err != nil {
 		t.Fatalf("WriteFile(%q) error = %v", path, err)
@@ -997,6 +1022,21 @@ logging:
 		t.Fatalf("config.Load() error = %v", err)
 	}
 	return cfg, path
+}
+
+func repoModelDir(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	dir := filepath.Clean(filepath.Join(wd, "../..", "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en"))
+	for _, name := range []string{"tokens.txt", "encoder.int8.onnx", "decoder.int8.onnx"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("required sherpa model %s missing: %v", name, err)
+		}
+	}
+	return dir
 }
 
 func mustGet(t *testing.T, url string) *http.Response {

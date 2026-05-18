@@ -242,6 +242,22 @@ protocol AudioStreamClient {
     func sendAudioCancel(reason: String) async throws
 }
 
+protocol MacConnectionMonitoring {
+    func waitUntilDisconnected() async
+}
+
+struct NoopMacConnectionMonitor: MacConnectionMonitoring {
+    func waitUntilDisconnected() async {
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(nanoseconds: 60_000_000_000)
+            } catch {
+                return
+            }
+        }
+    }
+}
+
 protocol AudioCaptureSourcing: AnyObject {
     func start(onPCM: @escaping (Data) -> Void) throws
     func stop()
@@ -574,6 +590,7 @@ struct RemoteMicShellEnvironment {
     let audioStreamClient: AudioStreamClient
     let microphoneSource: AudioCaptureSourcing
     let disconnectSecureSession: () -> Void
+    let macConnectionMonitor: MacConnectionMonitoring
 
     static func production(
         bonjourBrowser: BonjourNetServiceBrowsing = SystemBonjourServiceBrowser(),
@@ -591,7 +608,8 @@ struct RemoteMicShellEnvironment {
             microphoneSource: microphoneSource,
             disconnectSecureSession: {
                 secureSessionStore.clear()
-            }
+            },
+            macConnectionMonitor: SecureSessionMacConnectionMonitor(sessionStore: secureSessionStore)
         )
     }
 
@@ -611,7 +629,8 @@ struct RemoteMicShellEnvironment {
             microphoneSource: UITestingMicrophoneSource(),
             disconnectSecureSession: {
                 secureSessionStore.clear()
-            }
+            },
+            macConnectionMonitor: NoopMacConnectionMonitor()
         )
     }
 
@@ -623,7 +642,8 @@ struct RemoteMicShellEnvironment {
             identityStore: identityStore,
             audioStreamClient: audioStreamClient,
             microphoneSource: microphoneSource,
-            disconnectSecureSession: disconnectSecureSession
+            disconnectSecureSession: disconnectSecureSession,
+            macConnectionMonitor: macConnectionMonitor
         )
     }
 }
@@ -647,6 +667,7 @@ final class RemoteMicShellViewModel: ObservableObject {
     private let audioStreamClient: AudioStreamClient
     private let microphoneSource: AudioCaptureSourcing
     private let disconnectSecureSession: () -> Void
+    private let macConnectionMonitor: MacConnectionMonitoring
     private let firstFrameTimeoutNanoseconds: UInt64
     private let stopTailCaptureNanoseconds: UInt64
     private let audioOperationTimeoutNanoseconds: UInt64
@@ -657,6 +678,7 @@ final class RemoteMicShellViewModel: ObservableObject {
     private let pendingPCMChunks = PendingPCMChunkBuffer()
     private var pcmDrainTask: Task<Void, Never>?
     private var firstFrameTimeoutTask: Task<Void, Never>?
+    private var macConnectionMonitorTask: Task<Void, Never>?
 
     init(
         discoveryBrowser: RemoteMacDiscovering,
@@ -665,6 +687,7 @@ final class RemoteMicShellViewModel: ObservableObject {
         audioStreamClient: AudioStreamClient = UnavailableAudioStreamClient(),
         microphoneSource: AudioCaptureSourcing = UnavailableMicrophoneSource(),
         disconnectSecureSession: @escaping () -> Void = {},
+        macConnectionMonitor: MacConnectionMonitoring = NoopMacConnectionMonitor(),
         firstFrameTimeoutNanoseconds: UInt64 = 3_000_000_000,
         stopTailCaptureNanoseconds: UInt64 = 250_000_000,
         audioOperationTimeoutNanoseconds: UInt64 = 8_000_000_000
@@ -675,6 +698,7 @@ final class RemoteMicShellViewModel: ObservableObject {
         self.audioStreamClient = audioStreamClient
         self.microphoneSource = microphoneSource
         self.disconnectSecureSession = disconnectSecureSession
+        self.macConnectionMonitor = macConnectionMonitor
         self.firstFrameTimeoutNanoseconds = firstFrameTimeoutNanoseconds
         self.stopTailCaptureNanoseconds = stopTailCaptureNanoseconds
         self.audioOperationTimeoutNanoseconds = audioOperationTimeoutNanoseconds
@@ -694,6 +718,10 @@ final class RemoteMicShellViewModel: ObservableObject {
         } catch {
             lastErrorMessage = "The saved Mac could not be loaded. Pair again if needed."
         }
+    }
+
+    deinit {
+        macConnectionMonitorTask?.cancel()
     }
 
     var knownMacName: String? {
@@ -777,6 +805,7 @@ final class RemoteMicShellViewModel: ObservableObject {
             currentMacName = identity.macDisplayName
             pin = ""
             connectionState = .paired
+            startMacConnectionMonitor()
         } catch let error as RemoteMicFlowError {
             connectionState = .failedPairing
             lastErrorMessage = error.errorDescription
@@ -806,6 +835,7 @@ final class RemoteMicShellViewModel: ObservableObject {
             knownIdentity = refreshedIdentity
             currentMacName = refreshedIdentity.macDisplayName
             connectionState = .paired
+            startMacConnectionMonitor()
         } catch let error as RemoteMicFlowError {
             connectionState = .failedPairing
             lastErrorMessage = error.errorDescription
@@ -834,6 +864,7 @@ final class RemoteMicShellViewModel: ObservableObject {
     }
 
     func disconnectFromCurrentMac() async {
+        stopMacConnectionMonitor()
         if recordingState == .recording || recordingState == .stopping {
             await cancelRecording(reason: "connection_power_off")
         }
@@ -847,6 +878,7 @@ final class RemoteMicShellViewModel: ObservableObject {
 
     func forgetKnownMac() async {
         do {
+            stopMacConnectionMonitor()
             disconnectSecureSession()
             try identityStore.clearPairedIdentity()
             knownIdentity = nil
@@ -860,6 +892,37 @@ final class RemoteMicShellViewModel: ObservableObject {
             connectionState = .failedPairing
             lastErrorMessage = "The saved Mac could not be removed from secure storage."
         }
+    }
+
+    private func startMacConnectionMonitor() {
+        stopMacConnectionMonitor()
+        let monitor = macConnectionMonitor
+        macConnectionMonitorTask = Task { [weak self] in
+            await monitor.waitUntilDisconnected()
+            guard !Task.isCancelled else { return }
+            await self?.handleMonitoredMacDisconnect()
+        }
+    }
+
+    private func stopMacConnectionMonitor() {
+        macConnectionMonitorTask?.cancel()
+        macConnectionMonitorTask = nil
+    }
+
+    private func handleMonitoredMacDisconnect() async {
+        guard connectionState == .paired else {
+            return
+        }
+        if recordingState == .recording || recordingState == .stopping {
+            await cancelRecording(reason: "mac_disconnected")
+        }
+        disconnectSecureSession()
+        currentMacName = nil
+        connectionState = .idle
+        lastErrorMessage = "The Mac disconnected. Start Talka on the Mac and reconnect."
+        lastAudioDiagnostic = nil
+        audioLevel = 0
+        macConnectionMonitorTask = nil
     }
 
     func streamPCMChunksForTesting(_ chunks: [Data], maxQueuedFrames: Int = 8) async {
@@ -1411,18 +1474,92 @@ struct URLSessionSecureAudioWebSocketConnector: SecureAudioWebSocketConnecting {
 }
 
 final class SecureAudioSessionStore {
+    private let lock = NSLock()
     private var session: SecureAudioSessionKeys?
 
     func save(_ session: SecureAudioSessionKeys) {
+        lock.lock()
         self.session = session
+        lock.unlock()
     }
 
     func load() -> SecureAudioSessionKeys? {
-        session
+        lock.lock()
+        let session = session
+        lock.unlock()
+        return session
     }
 
     func clear() {
+        lock.lock()
         session = nil
+        lock.unlock()
+    }
+}
+
+struct SecureSessionMacConnectionMonitor: MacConnectionMonitoring {
+    let sessionStore: SecureAudioSessionStore
+    var urlSession: URLSession = .shared
+    var pollNanoseconds: UInt64 = 2_000_000_000
+    var requestTimeout: TimeInterval = 1.5
+
+    func waitUntilDisconnected() async {
+        while !Task.isCancelled {
+            guard let session = sessionStore.load(),
+                  let statusURL = Self.statusURL(from: session.audioWebSocketURL)
+            else {
+                return
+            }
+            if !(await isReachable(statusURL)) {
+                return
+            }
+            do {
+                try await Task.sleep(nanoseconds: pollNanoseconds)
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func isReachable(_ statusURL: URL) async -> Bool {
+        var request = URLRequest(url: statusURL)
+        request.timeoutInterval = requestTimeout
+        do {
+            let (data, response) = try await urlSession.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, 200..<300 ~= httpResponse.statusCode else {
+                return false
+            }
+            guard let status = try? JSONDecoder().decode(MacServiceStatus.self, from: data) else {
+                return false
+            }
+            return !status.serviceName.isEmpty
+        } catch {
+            return false
+        }
+    }
+
+    private static func statusURL(from audioWebSocketURL: URL) -> URL? {
+        var components = URLComponents(url: audioWebSocketURL, resolvingAgainstBaseURL: false)
+        switch components?.scheme {
+        case "ws":
+            components?.scheme = "http"
+        case "wss":
+            components?.scheme = "https"
+        default:
+            return nil
+        }
+        components?.path = "/v1/status"
+        components?.query = nil
+        components?.fragment = nil
+        return components?.url
+    }
+
+    private struct MacServiceStatus: Decodable {
+        let serviceName: String
+
+        enum CodingKeys: String, CodingKey {
+            case serviceName = "service_name"
+        }
     }
 }
 

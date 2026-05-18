@@ -3,7 +3,7 @@ set -eu
 
 ollama_url="http://localhost:11434"
 model="qwen3:8b"
-asr_model="fixtures/config/models/funasr/paraformer-zh-onnx"
+asr_model="models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/encoder.int8.onnx"
 
 usage() {
   printf 'usage: %s [--ollama-url URL] [--model MODEL] [--asr-model PATH]\n' "$0" >&2
@@ -35,5 +35,5 @@ output="$(go run ./internal/app/smokesettings --ollama-url "$ollama_url" --model
 printf '%s\n' "$output"
 
 printf '%s\n' "$output" | grep -q '^CONFIG_OK '
-printf '%s\n' "$output" | grep -q '^VALIDATION_ERROR field=asr.models.vad$'
+printf '%s\n' "$output" | grep -q '^VALIDATION_ERROR field=asr.sherpa_onnx.decoder_path$'
 printf '%s\n' "$output" | grep -q '^SECRET_SCAN_OK$'

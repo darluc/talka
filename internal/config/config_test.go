@@ -16,173 +16,32 @@ func TestDefaultPathUsesApplicationSupportTalka(t *testing.T) {
 	}
 }
 
-func TestDefaultConfigMatchesScaffoldConstraints(t *testing.T) {
+func TestDefaultConfigUsesONNXBilingualASR(t *testing.T) {
 	cfg := Default()
 
-	if cfg.Server.BindHost != "0.0.0.0" {
-		t.Fatalf("Server.BindHost = %q, want %q", cfg.Server.BindHost, "0.0.0.0")
+	if cfg.ASR.Provider != "onnx" {
+		t.Fatalf("ASR.Provider = %q, want onnx", cfg.ASR.Provider)
 	}
-
-	if cfg.Server.ServiceName != "Talka" {
-		t.Fatalf("Server.ServiceName = %q, want %q", cfg.Server.ServiceName, "Talka")
+	if cfg.ASR.Mode != "streaming" {
+		t.Fatalf("ASR.Mode = %q, want streaming", cfg.ASR.Mode)
 	}
-
-	if cfg.ASR.Provider != "funasr" {
-		t.Fatalf("ASR.Provider = %q, want %q", cfg.ASR.Provider, "funasr")
+	if cfg.ASR.SherpaONNX.ModelProfile != "paraformer-bilingual" {
+		t.Fatalf("ModelProfile = %q, want paraformer-bilingual", cfg.ASR.SherpaONNX.ModelProfile)
 	}
-
+	if !strings.Contains(cfg.ASR.SherpaONNX.EncoderPath, "streaming-paraformer-bilingual-zh-en") {
+		t.Fatalf("EncoderPath = %q, want bilingual model path", cfg.ASR.SherpaONNX.EncoderPath)
+	}
 	if cfg.ASR.SampleRate != 16000 {
-		t.Fatalf("ASR.SampleRate = %d, want %d", cfg.ASR.SampleRate, 16000)
+		t.Fatalf("ASR.SampleRate = %d, want 16000", cfg.ASR.SampleRate)
 	}
-	if cfg.ASR.StartupTimeout != 180 {
-		t.Fatalf("ASR.StartupTimeout = %d, want %d", cfg.ASR.StartupTimeout, 180)
-	}
-
-	if cfg.ASR.Mode != "2pass" {
-		t.Fatalf("ASR.Mode = %q, want %q", cfg.ASR.Mode, "2pass")
-	}
-
-	if cfg.ASR.RuntimePath == "" {
-		t.Fatal("ASR.RuntimePath is empty")
-	}
-
-	if cfg.ASR.Models.ASR != "models/funasr/paraformer-zh-onnx" {
-		t.Fatalf("ASR.Models.ASR = %q, want embedded model path", cfg.ASR.Models.ASR)
-	}
-
-	if cfg.ASR.Models.Online != "models/funasr/paraformer-zh-online-onnx" {
-		t.Fatalf("ASR.Models.Online = %q, want embedded online model path", cfg.ASR.Models.Online)
-	}
-
 	if cfg.LLM.Provider != "ollama" {
-		t.Fatalf("LLM.Provider = %q, want %q", cfg.LLM.Provider, "ollama")
-	}
-
-	if cfg.LLM.BaseURL != "http://localhost:11434" {
-		t.Fatalf("LLM.BaseURL = %q, want %q", cfg.LLM.BaseURL, "http://localhost:11434")
-	}
-
-	if !cfg.Injection.RestoreClipboard {
-		t.Fatal("Injection.RestoreClipboard = false, want true")
-	}
-
-	if cfg.Logging.CaptureAudio {
-		t.Fatal("Logging.CaptureAudio = true, want false")
-	}
-
-	if cfg.Logging.CaptureTranscript {
-		t.Fatal("Logging.CaptureTranscript = true, want false")
-	}
-}
-
-func TestLoadAppliesDefaultsAndValidatesEmbeddedRuntimeConfig(t *testing.T) {
-	tmpDir := t.TempDir()
-	mustMkdir(t, tmpDir, "runtime")
-	mustMkdir(t, tmpDir, "models/asr")
-	mustMkdir(t, tmpDir, "models/online")
-	mustMkdir(t, tmpDir, "models/vad")
-	mustMkdir(t, tmpDir, "models/punc")
-	mustMkdir(t, tmpDir, "models/itn")
-
-	configPath := writeTempConfig(t, tmpDir, []byte(`server:
-  port: 0
-asr:
-  provider: funasr_embedded
-  runtime_path: runtime
-  port: 10095
-  startup_timeout_seconds: 180
-  models:
-    asr: models/asr
-    online: models/online
-    vad: models/vad
-    punc: models/punc
-    itn: models/itn
-`))
-
-	cfg, err := Load(configPath)
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-
-	if cfg.Server.BindHost != "0.0.0.0" {
-		t.Fatalf("Server.BindHost = %q, want %q", cfg.Server.BindHost, "0.0.0.0")
-	}
-
-	if cfg.LLM.Provider != "ollama" {
-		t.Fatalf("LLM.Provider = %q, want %q", cfg.LLM.Provider, "ollama")
-	}
-
-	if cfg.ASR.RuntimePath != "runtime" {
-		t.Fatalf("ASR.RuntimePath = %q, want %q", cfg.ASR.RuntimePath, "runtime")
-	}
-
-	if cfg.ASR.Host != "127.0.0.1" {
-		t.Fatalf("ASR.Host = %q, want %q", cfg.ASR.Host, "127.0.0.1")
-	}
-
-	if cfg.ASR.Models.Online != "models/online" {
-		t.Fatalf("ASR.Models.Online = %q, want embedded online model path", cfg.ASR.Models.Online)
-	}
-}
-
-func TestLoadRejectsMissingEmbeddedOnlineModel(t *testing.T) {
-	tmpDir := t.TempDir()
-	mustMkdir(t, tmpDir, "runtime")
-	mustMkdir(t, tmpDir, "models/asr")
-	mustMkdir(t, tmpDir, "models/vad")
-	mustMkdir(t, tmpDir, "models/punc")
-	mustMkdir(t, tmpDir, "models/itn")
-	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
-  provider: funasr_embedded
-  runtime_path: runtime
-  port: 10095
-  startup_timeout_seconds: 180
-  models:
-    asr: models/asr
-    online: ""
-    vad: models/vad
-    punc: models/punc
-    itn: models/itn
-`))
-
-	_, err := Load(configPath)
-	if err == nil {
-		t.Fatal("Load() error = nil, want missing model path error")
-	}
-
-	if got := err.Error(); got == "" || !containsAll(got, []string{"asr.models.online", "must not be empty"}) {
-		t.Fatalf("Load() error = %q, want actionable online model error", got)
-	}
-}
-
-func TestLoadRejectsExternalFunASRProvider(t *testing.T) {
-	tmpDir := t.TempDir()
-	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
-  provider: funasr_external
-  host: 127.0.0.1
-  port: 10095
-  mode: 2pass
-  sample_rate: 16000
-  startup_timeout_seconds: 180
-`))
-
-	_, err := Load(configPath)
-	if err == nil {
-		t.Fatal("Load() error = nil, want unsupported provider error")
-	}
-	if got := err.Error(); got == "" || !containsAll(got, []string{"asr.provider", "must be one of funasr, onnx"}) {
-		t.Fatalf("Load() error = %q, want actionable provider error", got)
+		t.Fatalf("LLM.Provider = %q, want ollama", cfg.LLM.Provider)
 	}
 }
 
 func TestLoadAcceptsSherpaONNXStreamingConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	mustMkdir(t, tmpDir, "models/sherpa")
-	for _, name := range []string{"tokens.txt", "encoder.onnx", "decoder.onnx"} {
-		if err := os.WriteFile(filepath.Join(tmpDir, "models/sherpa", name), []byte("model"), 0o644); err != nil {
-			t.Fatalf("WriteFile(%q) error = %v", name, err)
-		}
-	}
+	mustWriteSherpaFiles(t, tmpDir, "models/sherpa", "encoder.onnx", "decoder.onnx")
 
 	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
   provider: onnx
@@ -210,28 +69,37 @@ func TestLoadAcceptsSherpaONNXStreamingConfig(t *testing.T) {
 	if cfg.ASR.Provider != "onnx" {
 		t.Fatalf("ASR.Provider = %q, want onnx", cfg.ASR.Provider)
 	}
-	if cfg.ASR.SherpaONNX.TokensPath != "models/sherpa/tokens.txt" {
-		t.Fatalf("TokensPath = %q, want configured path", cfg.ASR.SherpaONNX.TokensPath)
-	}
-	if cfg.ASR.SherpaONNX.ModelType != "paraformer" {
-		t.Fatalf("ModelType = %q, want paraformer", cfg.ASR.SherpaONNX.ModelType)
-	}
 	if cfg.ASR.SherpaONNX.Precision != "int8" {
 		t.Fatalf("Precision = %q, want int8 default", cfg.ASR.SherpaONNX.Precision)
 	}
-	if cfg.ASR.SherpaONNX.ModelProfile != "paraformer-trilingual" {
-		t.Fatalf("ModelProfile = %q, want paraformer-trilingual default", cfg.ASR.SherpaONNX.ModelProfile)
+	if cfg.ASR.SherpaONNX.ModelProfile != "paraformer-bilingual" {
+		t.Fatalf("ModelProfile = %q, want paraformer-bilingual default", cfg.ASR.SherpaONNX.ModelProfile)
+	}
+}
+
+func TestLoadRejectsFunASRProvider(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
+  provider: funasr
+  host: 127.0.0.1
+  port: 10095
+  mode: 2pass
+  sample_rate: 16000
+  startup_timeout_seconds: 180
+`))
+
+	_, err := Load(configPath)
+	if err == nil {
+		t.Fatal("Load() error = nil, want unsupported provider error")
+	}
+	if got := err.Error(); !containsAll(got, []string{"asr.provider", "must be onnx"}) {
+		t.Fatalf("Load() error = %q, want onnx-only provider error", got)
 	}
 }
 
 func TestLoadAcceptsSherpaONNXFP32Precision(t *testing.T) {
 	tmpDir := t.TempDir()
-	mustMkdir(t, tmpDir, "models/sherpa")
-	for _, name := range []string{"tokens.txt", "encoder.onnx", "decoder.onnx"} {
-		if err := os.WriteFile(filepath.Join(tmpDir, "models/sherpa", name), []byte("model"), 0o644); err != nil {
-			t.Fatalf("WriteFile(%q) error = %v", name, err)
-		}
-	}
+	mustWriteSherpaFiles(t, tmpDir, "models/sherpa", "encoder.onnx", "decoder.onnx")
 
 	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
   provider: onnx
@@ -264,12 +132,7 @@ func TestLoadAcceptsSherpaONNXFP32Precision(t *testing.T) {
 
 func TestLoadRejectsInvalidSherpaONNXPrecision(t *testing.T) {
 	tmpDir := t.TempDir()
-	mustMkdir(t, tmpDir, "models/sherpa")
-	for _, name := range []string{"tokens.txt", "encoder.onnx", "decoder.onnx"} {
-		if err := os.WriteFile(filepath.Join(tmpDir, "models/sherpa", name), []byte("model"), 0o644); err != nil {
-			t.Fatalf("WriteFile(%q) error = %v", name, err)
-		}
-	}
+	mustWriteSherpaFiles(t, tmpDir, "models/sherpa", "encoder.onnx", "decoder.onnx")
 
 	configPath := writeTempConfig(t, tmpDir, []byte(`asr:
   provider: onnx
@@ -330,10 +193,16 @@ func TestLoadRejectsMissingSherpaONNXModelFile(t *testing.T) {
 	}
 }
 
-func mustMkdir(t *testing.T, root, rel string) {
+func mustWriteSherpaFiles(t *testing.T, root, rel, encoder, decoder string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(root, rel), 0o755); err != nil {
+	dir := filepath.Join(root, rel)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(%q) error = %v", rel, err)
+	}
+	for _, name := range []string{"tokens.txt", encoder, decoder} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("model"), 0o644); err != nil {
+			t.Fatalf("WriteFile(%q) error = %v", name, err)
+		}
 	}
 }
 

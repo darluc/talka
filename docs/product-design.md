@@ -4,14 +4,14 @@
 
 Talka is a local-first voice input toolchain. An iOS app captures speech and streams audio to a macOS service on the same local network. The macOS service transcribes speech locally, refines the resulting text with a local LLM, and inserts the final text into the currently focused macOS input field.
 
-The product is designed for fast personal dictation, short-form writing, chat replies, notes, and coding-adjacent text entry. Privacy and local control are core requirements: audio stays inside the user's local network, ASR runs locally through an embedded FunASR C++/ONNX Runtime by default, and text post-processing defaults to the user's local Ollama service. Advanced users can switch the ASR backend to an external FunASR runtime or a legacy Talka sidecar when needed.
+The product is designed for fast personal dictation, short-form writing, chat replies, notes, and coding-adjacent text entry. Privacy and local control are core requirements: audio stays inside the user's local network, ASR runs locally through the bundled sherpa-onnx streaming recognizer, and text post-processing defaults to the user's local Ollama service.
 
 ## Goals
 
 - Provide a simple iOS voice capture interface with clear recording feedback.
 - Pair iOS and macOS devices securely with a one-time PIN.
 - Stream audio from iOS to macOS over the local network.
-- Run local Chinese-first ASR using an embedded FunASR C++/ONNX Runtime by default.
+- Run local Chinese/English ASR using the bundled sherpa-onnx bilingual zh-en Paraformer model by default.
 - Use Ollama for punctuation, sentence cleanup, style-preserving correction, and final text polishing.
 - Insert generated text into the active macOS application with minimal user friction.
 - Keep the system extensible so embedded ASR, external ASR, LLM, transport, and text-injection methods can evolve independently.

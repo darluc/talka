@@ -54,8 +54,8 @@ func TestIOSAudioWebSocketReturnsSanitizedDecodeError(t *testing.T) {
 func TestIOSWebSocketErrorCodeReturnsSpecificASRFailure(t *testing.T) {
 	err := asr.NewRuntimeErrorWithDiagnostic(
 		asr.ErrorCodeRuntimeUnavailable,
-		"embedded FunASR runtime startup failed",
-		"missing language model bundle: /Applications/TalkaMac.app/Contents/Resources/models/funasr/speech_ngram_lm_zh-cn-ai-wesp-fst/TLG.fst",
+		"embedded ASR runtime startup failed",
+		"missing language model bundle: /Applications/TalkaMac.app/Contents/Resources/models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/tokens.txt",
 		errors.New("embedded runtime aborted"),
 	)
 
@@ -75,7 +75,7 @@ func TestIOSWebSocketErrorCodeReturnsSpecificASRFailure(t *testing.T) {
 func TestIOSWebSocketErrorCodeReturnsSpecificASRStartupTimeoutFailure(t *testing.T) {
 	err := asr.NewRuntimeErrorWithDiagnostic(
 		asr.ErrorCodeRuntimeStartupFailed,
-		"embedded FunASR runtime could not start",
+		"embedded ASR runtime could not start",
 		"runtime did not become healthy within 5s",
 		errors.New("context deadline exceeded"),
 	)

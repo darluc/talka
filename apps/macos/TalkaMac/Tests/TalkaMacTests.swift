@@ -69,17 +69,17 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertEqual(viewModel.latestLatencyTrace?.totalAfterStopMS, 557)
     }
 
-    func testASRModeOptionsExposeOnlyFunASRAndONNX() {
-        XCTAssertEqual(ASRModeOption.allCases.map(\.rawValue), ["funasr", "onnx"])
-        XCTAssertEqual(ASRModeOption.allCases.map(\.title), ["FunASR", "ONNX"])
+    func testASRModeOptionsExposeOnlyONNX() {
+        XCTAssertEqual(ASRModeOption.allCases.map(\.rawValue), ["onnx"])
+        XCTAssertEqual(ASRModeOption.allCases.map(\.title), ["ONNX"])
     }
 
     func testASRModeNormalizesLegacyProviders() {
         XCTAssertEqual(ASRModeOption.normalizedProvider("sherpa_onnx_streaming"), "onnx")
         XCTAssertEqual(ASRModeOption.normalizedProvider("sherpa"), "onnx")
-        XCTAssertEqual(ASRModeOption.normalizedProvider("funasr_embedded"), "funasr")
-        XCTAssertEqual(ASRModeOption.normalizedProvider("funasr_external"), "funasr")
-        XCTAssertEqual(ASRModeOption.normalizedProvider("sidecar"), "funasr")
+        XCTAssertEqual(ASRModeOption.normalizedProvider("funasr_embedded"), "onnx")
+        XCTAssertEqual(ASRModeOption.normalizedProvider("funasr_external"), "onnx")
+        XCTAssertEqual(ASRModeOption.normalizedProvider("sidecar"), "onnx")
     }
 
     func testControlASRConfigDecodesLegacyProviderAsSupportedMode() throws {
@@ -317,7 +317,7 @@ final class TalkaMacTests: XCTestCase {
     func testOverallHealthRequiresServiceAIAndASRReady() async {
         let healthy = ControlStatus.fixture(
             state: "running",
-            asr: ControlASRStatus(provider: "funasr", runtimePath: "", sampleRate: 16000, mode: "2pass", ready: true, error: nil),
+            asr: ControlASRStatus(provider: "onnx", modelProfile: "paraformer-bilingual", sampleRate: 16000, mode: "streaming", ready: true, error: nil),
             ollama: ControlOllamaStatus(baseURL: "http://localhost:11434", model: "qwen3:8b", timeoutSeconds: 30, ready: true, error: nil)
         )
         let unhealthyAI = ControlStatus.fixture(
@@ -376,10 +376,10 @@ final class TalkaMacTests: XCTestCase {
           "device_count": 1,
           "pairing_active": true,
           "asr": {
-            "provider": "funasr_external",
-            "runtime_path": "",
+            "provider": "onnx",
+            "model_profile": "paraformer-bilingual",
             "sample_rate": 16000,
-            "mode": "2pass",
+            "mode": "streaming",
             "ready": true
           },
           "ollama": {
@@ -403,7 +403,7 @@ final class TalkaMacTests: XCTestCase {
 
         let status = try await client.fetchStatus()
 
-        XCTAssertEqual(status.asr?.provider, "funasr_external")
+        XCTAssertEqual(status.asr?.provider, "onnx")
         XCTAssertEqual(status.asr?.ready, true)
         XCTAssertEqual(status.ollama?.baseURL, "http://localhost:11434")
         XCTAssertEqual(status.ollama?.ready, false)
@@ -493,7 +493,7 @@ final class TalkaMacTests: XCTestCase {
         viewModel.config.llm.model = "qwen3:8b"
         viewModel.config.asr.host = "192.168.1.10"
         viewModel.config.asr.port = 10096
-        viewModel.config.asr.mode = "2pass"
+        viewModel.config.asr.mode = "streaming"
         viewModel.config.logging.captureAudio = true
         await viewModel.saveConfig()
 
@@ -501,7 +501,7 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertEqual(client.savedConfig?.llm.model, "qwen3:8b")
         XCTAssertEqual(client.savedConfig?.asr.host, "192.168.1.10")
         XCTAssertEqual(client.savedConfig?.asr.port, 10096)
-        XCTAssertEqual(client.savedConfig?.asr.mode, "2pass")
+        XCTAssertEqual(client.savedConfig?.asr.mode, "streaming")
         XCTAssertEqual(client.savedConfig?.logging.captureAudio, true)
         XCTAssertNil(viewModel.lastErrorMessage)
     }
@@ -558,11 +558,10 @@ final class TalkaMacTests: XCTestCase {
               "service_name": "Talka"
             },
             "asr": {
-              "provider": "funasr",
-              "runtime_path": "talka-asr-runtime",
+              "provider": "onnx",
               "host": "127.0.0.1",
               "port": 10095,
-              "mode": "2pass",
+              "mode": "streaming",
               "sample_rate": 16000,
               "startup_timeout_seconds": 180,
               "container_image": "",
@@ -576,6 +575,19 @@ final class TalkaMacTests: XCTestCase {
                 "punc": "models/funasr/ct-punc-onnx",
                 "itn": "models/funasr/itn-zh",
                 "lm": ""
+              },
+              "sherpa_onnx": {
+                "model_profile": "paraformer-bilingual",
+                "model_type": "paraformer",
+                "precision": "int8",
+                "tokens_path": "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/tokens.txt",
+                "encoder_path": "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/encoder.int8.onnx",
+                "decoder_path": "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/decoder.int8.onnx",
+                "joiner_path": "",
+                "num_threads": 2,
+                "decoding_method": "greedy_search",
+                "feature_dim": 80,
+                "provider": "cpu"
               }
             },
             "llm": {
@@ -620,11 +632,10 @@ final class TalkaMacTests: XCTestCase {
               "service_name": "Talka"
             },
             "asr": {
-              "provider": "funasr",
-              "runtime_path": "talka-asr-runtime",
+              "provider": "onnx",
               "host": "127.0.0.1",
               "port": 10095,
-              "mode": "2pass",
+              "mode": "streaming",
               "sample_rate": 16000,
               "startup_timeout_seconds": 180,
               "container_image": "",
@@ -638,6 +649,19 @@ final class TalkaMacTests: XCTestCase {
                 "punc": "models/funasr/ct-punc-onnx",
                 "itn": "models/funasr/itn-zh",
                 "lm": ""
+              },
+              "sherpa_onnx": {
+                "model_profile": "paraformer-bilingual",
+                "model_type": "paraformer",
+                "precision": "int8",
+                "tokens_path": "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/tokens.txt",
+                "encoder_path": "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/encoder.int8.onnx",
+                "decoder_path": "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/decoder.int8.onnx",
+                "joiner_path": "",
+                "num_threads": 2,
+                "decoding_method": "greedy_search",
+                "feature_dim": 80,
+                "provider": "cpu"
               }
             },
             "llm": {
@@ -680,10 +704,10 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertEqual(server["service_name"] as? String, expected.server.serviceName)
         XCTAssertNil(server["bindHost"])
         XCTAssertNil(server["serviceName"])
-        XCTAssertEqual(asr["container_image"] as? String, expected.asr.containerImage)
-        XCTAssertEqual(asr["container_name"] as? String, expected.asr.containerName)
-        XCTAssertEqual(asr["download_dir"] as? String, expected.asr.downloadDir)
-        XCTAssertEqual(asr["hotword_path"] as? String, expected.asr.hotwordPath)
+        XCTAssertNil(asr["container_image"])
+        XCTAssertNil(asr["container_name"])
+        XCTAssertNil(asr["download_dir"])
+        XCTAssertNil(asr["hotword_path"])
         XCTAssertEqual(asr["sample_rate"] as? Int, expected.asr.sampleRate)
         XCTAssertEqual(asr["startup_timeout_seconds"] as? Int, expected.asr.startupTimeoutSeconds)
         XCTAssertNil(asr["containerImage"])
@@ -843,7 +867,7 @@ final class TalkaMacTests: XCTestCase {
         let secondURL = try generator.generateConfig()
         XCTAssertEqual(secondURL, configURL)
         let contents = try String(contentsOf: configURL, encoding: .utf8)
-        XCTAssertTrue(contents.contains("provider: funasr"))
+        XCTAssertTrue(contents.contains("provider: onnx"))
         XCTAssertFalse(contents.contains("provider: funasr_external"))
     }
 
@@ -947,10 +971,9 @@ final class TalkaMacTests: XCTestCase {
 
         XCTAssertEqual(generatedURL, configURL)
         let contents = try String(contentsOf: configURL, encoding: .utf8)
-        XCTAssertTrue(contents.contains("asr:\n  provider: funasr"))
-        XCTAssertTrue(contents.contains("runtime_path: \(resourcesDir.appendingPathComponent("talka-asr-runtime").path)"))
-        XCTAssertTrue(contents.contains("hotword_path: \"\""))
-        XCTAssertTrue(contents.contains("    asr: \(modelsDir.appendingPathComponent("paraformer-zh-onnx").path)"))
+        XCTAssertTrue(contents.contains("asr:\n  provider: onnx"))
+        XCTAssertTrue(contents.contains("model_profile: paraformer-bilingual"))
+        XCTAssertTrue(contents.contains("encoder_path: \(resourcesDir.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/encoder.int8.onnx").path)"))
         XCTAssertTrue(contents.contains("model: custom-model"))
         XCTAssertFalse(contents.contains("/Applications/TalkaMac.app/Contents/Resources"))
     }
@@ -1086,8 +1109,8 @@ final class TalkaMacTests: XCTestCase {
 
         let contents = try String(contentsOf: configURL, encoding: .utf8)
         XCTAssertFalse(contents.contains("asr:\n  provider: funasr\n    provider: funasr"))
-        XCTAssertEqual(contents.components(separatedBy: "provider: funasr").count - 1, 1)
-        XCTAssertTrue(contents.contains("runtime_path: \(resourcesDir.appendingPathComponent("talka-asr-runtime").path)"))
+        XCTAssertEqual(contents.components(separatedBy: "provider: funasr").count - 1, 0)
+        XCTAssertTrue(contents.contains("provider: onnx"))
         XCTAssertTrue(contents.contains("model: custom-model"))
     }
 
@@ -1133,8 +1156,8 @@ final class TalkaMacTests: XCTestCase {
 
         let contents = try String(contentsOf: configURL, encoding: .utf8)
         XCTAssertFalse(contents.contains("asr:\n  provider: funasr\n    provider: funasr"))
-        XCTAssertEqual(contents.components(separatedBy: "provider: funasr").count - 1, 1)
-        XCTAssertTrue(contents.contains("runtime_path: \(resourcesDir.appendingPathComponent("talka-asr-runtime").path)"))
+        XCTAssertEqual(contents.components(separatedBy: "provider: funasr").count - 1, 0)
+        XCTAssertTrue(contents.contains("provider: onnx"))
     }
 
     func testRuntimeConfigGeneratorRepairsMalformedEmbeddedResourcePathLine() throws {
@@ -1184,8 +1207,8 @@ final class TalkaMacTests: XCTestCase {
 
         let contents = try String(contentsOf: configURL, encoding: .utf8)
         XCTAssertFalse(contents.contains("  /Applications/TalkaMac.app/Contents/Resources/models/funasr/paraformer-zh-onnx"))
-        XCTAssertTrue(contents.contains("asr:\n  provider: funasr"))
-        XCTAssertTrue(contents.contains("hotword_path: \"\""))
+        XCTAssertTrue(contents.contains("asr:\n  provider: onnx"))
+        XCTAssertTrue(contents.contains("model_profile: paraformer-bilingual"))
     }
 
     func testRuntimeConfigGeneratorRestoresMissingEmbeddedProvider() throws {
@@ -1232,7 +1255,8 @@ final class TalkaMacTests: XCTestCase {
         _ = try EmbeddedRuntimeConfigGenerator().generateConfig()
 
         let contents = try String(contentsOf: configURL, encoding: .utf8)
-        XCTAssertTrue(contents.contains("asr:\n  provider: funasr\n  runtime_path: \(resourcesDir.appendingPathComponent("talka-asr-runtime").path)"))
+        XCTAssertTrue(contents.contains("asr:\n  provider: onnx"))
+        XCTAssertTrue(contents.contains("model_profile: paraformer-bilingual"))
     }
 
     private func makeLiveClient(handler: @escaping @Sendable (URLRequest) throws -> (HTTPURLResponse, Data)) -> LiveControlAPIClient {
@@ -1470,25 +1494,12 @@ private extension ControlConfig {
             path: "/tmp/talka.yaml",
             server: ControlServerConfig(bindHost: "127.0.0.1", port: 8080, serviceName: "Talka"),
             asr: ControlASRConfig(
-                provider: "funasr",
-                runtimePath: "talka-asr-runtime",
+                provider: "onnx",
                 host: "127.0.0.1",
                 port: 10095,
-                mode: "2pass",
+                mode: "streaming",
                 sampleRate: 16_000,
-                startupTimeoutSeconds: 180,
-                containerImage: "",
-                containerName: "",
-                downloadDir: "",
-                hotwordPath: "",
-                models: ControlASRModelsConfig(
-                    asr: "models/funasr/paraformer-zh-onnx",
-                    online: "models/funasr/paraformer-zh-online-onnx",
-                    vad: "models/funasr/fsmn-vad-onnx",
-                    punc: "models/funasr/ct-punc-onnx",
-                    itn: "models/funasr/itn-zh",
-                    lm: ""
-                )
+                startupTimeoutSeconds: 180
             ),
             llm: ControlLLMConfig(provider: "ollama", baseURL: "http://localhost:11434", model: "qwen3:8b", timeoutSeconds: 30),
             injection: ControlInjectionConfig(mode: "clipboard_paste", restoreClipboard: true),

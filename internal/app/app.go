@@ -44,6 +44,7 @@ type App struct {
 	asrStatus        componentReadiness
 	ollamaStatus     componentReadiness
 	iosSessions      map[string]*iosAudioSession
+	iosAudioConns    map[net.Conn]struct{}
 	iosPairing       *pairing.StartResponse
 	iosManager       *pairing.Manager
 	latencyRecorder  *LatencyRecorder
@@ -81,12 +82,12 @@ type StatusResponse struct {
 }
 
 type ASRStatusResponse struct {
-	Provider    string `json:"provider"`
-	RuntimePath string `json:"runtime_path"`
-	SampleRate  int    `json:"sample_rate"`
-	Mode        string `json:"mode"`
-	Ready       bool   `json:"ready"`
-	Error       string `json:"error,omitempty"`
+	Provider     string `json:"provider"`
+	ModelProfile string `json:"model_profile"`
+	SampleRate   int    `json:"sample_rate"`
+	Mode         string `json:"mode"`
+	Ready        bool   `json:"ready"`
+	Error        string `json:"error,omitempty"`
 }
 
 type OllamaStatusResponse struct {
@@ -232,6 +233,7 @@ func NewWithPipeline(cfg config.Config, configPath string, logger *slog.Logger, 
 		pipelineRefs:     map[*Pipeline]int{},
 		retiredPipelines: map[*Pipeline]struct{}{},
 		iosSessions:      map[string]*iosAudioSession{},
+		iosAudioConns:    map[net.Conn]struct{}{},
 		latencyRecorder:  NewLatencyRecorder(defaultLatencyTraceLimit),
 	}
 	app.iosManager = pairing.NewManager(pairing.Config{ServerDeviceID: "talka-mac", ServerDeviceName: cfg.Server.ServiceName, Store: newIOSPairingStore(), PairingTTL: pairingLifetime, InactivityTimeout: 10 * time.Minute})
@@ -348,6 +350,8 @@ func (a *App) Serve(ctx context.Context, ln net.Listener) error {
 }
 
 func (a *App) Shutdown(ctx context.Context) error {
+	a.closeIOSAudioConns()
+
 	a.mu.Lock()
 	pipelines := make([]*Pipeline, 0, len(a.retiredPipelines)+1)
 	if a.pipeline != nil {
@@ -367,6 +371,37 @@ func (a *App) Shutdown(ctx context.Context) error {
 		}
 	}
 	return shutdownErr
+}
+
+func (a *App) registerIOSAudioConn(conn net.Conn) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.iosAudioConns == nil {
+		a.iosAudioConns = map[net.Conn]struct{}{}
+	}
+	a.iosAudioConns[conn] = struct{}{}
+}
+
+func (a *App) unregisterIOSAudioConn(conn net.Conn) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.iosAudioConns, conn)
+}
+
+func (a *App) closeIOSAudioConns() {
+	a.mu.Lock()
+	conns := make([]net.Conn, 0, len(a.iosAudioConns))
+	for conn := range a.iosAudioConns {
+		conns = append(conns, conn)
+		delete(a.iosAudioConns, conn)
+	}
+	a.mu.Unlock()
+
+	for _, conn := range conns {
+		_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+		_ = writeIOSWebSocketClose(conn, 1001, "mac shutting down")
+		_ = conn.Close()
+	}
 }
 
 func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -390,7 +425,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		UptimeSeconds: int64(time.Since(a.startedAt).Round(time.Second) / time.Second),
 		DeviceCount:   len(a.devices),
 		PairingActive: a.pairing != nil && time.Now().Before(a.pairing.ExpiresAt),
-		ASR:           ASRStatusResponse{Provider: a.cfg.ASR.Provider, RuntimePath: a.cfg.ASR.RuntimePath, SampleRate: a.cfg.ASR.SampleRate, Mode: a.cfg.ASR.Mode, Ready: a.asrStatus.Ready, Error: a.asrStatus.Error},
+		ASR:           ASRStatusResponse{Provider: a.cfg.ASR.Provider, ModelProfile: a.cfg.ASR.SherpaONNX.ModelProfile, SampleRate: a.cfg.ASR.SampleRate, Mode: a.cfg.ASR.Mode, Ready: a.asrStatus.Ready, Error: a.asrStatus.Error},
 		Ollama:        OllamaStatusResponse{BaseURL: a.cfg.LLM.BaseURL, Model: a.cfg.LLM.Model, TimeoutSeconds: a.cfg.LLM.TimeoutSeconds, Ready: a.ollamaStatus.Ready, Error: a.ollamaStatus.Error},
 		Injection:     InjectionStatusResponse{Mode: a.cfg.Injection.Mode, RestoreClipboard: a.cfg.Injection.RestoreClipboard, PasteBrokerSocket: os.Getenv("TALKA_PASTE_BROKER_SOCKET")},
 		Permissions:   PermissionsStatusResponse{Accessibility: "unknown"},

@@ -141,7 +141,7 @@ func overrideFlagValue(args []string, flagName, value string) []string {
 }
 
 func classifyRuntimeStartupFailure(url, diagnostics string, cause error) error {
-	return classifyScopedRuntimeStartupFailure("embedded FunASR runtime", url, diagnostics, cause)
+	return classifyScopedRuntimeStartupFailure("embedded ASR runtime", url, diagnostics, cause)
 }
 
 func classifyScopedRuntimeStartupFailure(scope, url, diagnostics string, cause error) error {
@@ -152,7 +152,7 @@ func classifyScopedRuntimeStartupFailure(scope, url, diagnostics string, cause e
 	lower := strings.ToLower(diagnostic)
 	scope = strings.TrimSpace(scope)
 	if scope == "" {
-		scope = "FunASR runtime"
+		scope = "ASR runtime"
 	}
 
 	switch {

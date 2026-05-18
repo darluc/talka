@@ -10,7 +10,6 @@ import (
 	"talka/internal/config"
 	"talka/internal/inject"
 	"talka/internal/llm"
-	"talka/internal/protocol"
 )
 
 var buildPipelineFromConfig = newPipelineFromConfig
@@ -33,9 +32,6 @@ func newPipelineFromConfig(cfg config.Config, configDir string) (*Pipeline, erro
 
 func newASRProviderFromConfig(cfg config.ASRConfig, configDir string) (ASRProvider, error) {
 	provider := normalizeASRProvider(cfg.Provider)
-	if provider == "sidecar" {
-		return asr.NewSidecarProvider(asr.Config{URL: asrWebsocketURL(cfg.Host, cfg.Port), Version: protocol.VersionV1Alpha1}), nil
-	}
 	if provider == "onnx" {
 		encoderPath := sherpaONNXModelPathForPrecision(cfg.SherpaONNX.ModelType, cfg.SherpaONNX.Precision, resolveConfigPath(configDir, cfg.SherpaONNX.EncoderPath))
 		decoderPath := sherpaONNXModelPathForPrecision(cfg.SherpaONNX.ModelType, cfg.SherpaONNX.Precision, resolveConfigPath(configDir, cfg.SherpaONNX.DecoderPath))
@@ -52,72 +48,13 @@ func newASRProviderFromConfig(cfg config.ASRConfig, configDir string) (ASRProvid
 			Provider:       cfg.SherpaONNX.Provider,
 		})
 	}
-	if provider == "funasr_external" {
-		return asr.NewUpstreamProvider(nil, asr.UpstreamProviderConfig{
-			URL:     fmt.Sprintf("ws://%s:%d/ws", cfg.Host, cfg.Port),
-			Mode:    cfg.Mode,
-			Timeout: 5 * time.Second,
-		}), nil
-	}
-	if provider == "funasr_container" {
-		manager := asr.NewDockerRuntimeManager(asr.DockerRuntimeManagerConfig{
-			Host:          cfg.Host,
-			Port:          cfg.Port,
-			Mode:          cfg.Mode,
-			Image:         cfg.ContainerImage,
-			ContainerName: cfg.ContainerName,
-			DownloadDir:   resolveConfigPath(configDir, cfg.DownloadDir),
-			HotwordPath:   resolveOptionalConfigPath(configDir, cfg.HotwordPath),
-			Models: asr.ModelPaths{
-				ASR:    cfg.Models.ASR,
-				Online: cfg.Models.Online,
-				VAD:    cfg.Models.VAD,
-				Punc:   cfg.Models.Punc,
-				ITN:    cfg.Models.ITN,
-				LM:     cfg.Models.LM,
-			},
-			StartupTimeout: time.Duration(cfg.StartupTimeout) * time.Second,
-		})
-		return asr.NewUpstreamProvider(manager, asr.UpstreamProviderConfig{
-			URL:     fmt.Sprintf("ws://%s:%d/ws", cfg.Host, cfg.Port),
-			Mode:    cfg.Mode,
-			Timeout: 5 * time.Second,
-		}), nil
-	}
-	if provider != "funasr" && provider != "funasr_onnx" {
-		return nil, fmt.Errorf("unsupported asr.provider %q", cfg.Provider)
-	}
-	// Resolve FunASR binary path relative to config dir before building args.
-	if cfg.FunASRBinaryPath != "" {
-		cfg.FunASRBinaryPath = resolveOptionalConfigPath(configDir, cfg.FunASRBinaryPath)
-	}
-	manager := asr.NewUpstreamRuntimeManager(asr.UpstreamRuntimeManagerConfig{
-		RuntimePath:     resolveConfigPath(configDir, cfg.RuntimePath),
-		RuntimeArgs:     asrRuntimeArgsFromConfig(cfg),
-		Host:            cfg.Host,
-		Port:            cfg.Port,
-		AlwaysEphemeral: true,
-		HotwordPath:     resolveOptionalConfigPath(configDir, cfg.HotwordPath),
-		Models: asr.ModelPaths{
-			ASR:    resolveConfigPath(configDir, cfg.Models.ASR),
-			Online: resolveConfigPath(configDir, cfg.Models.Online),
-			VAD:    resolveConfigPath(configDir, cfg.Models.VAD),
-			Punc:   resolveConfigPath(configDir, cfg.Models.Punc),
-			ITN:    resolveConfigPath(configDir, cfg.Models.ITN),
-			LM:     resolveOptionalConfigPath(configDir, cfg.Models.LM),
-		},
-		StartupTimeout: time.Duration(cfg.StartupTimeout) * time.Second,
-	})
-	return asr.NewManagedSidecarProvider(manager, asr.Config{
-		Version: protocol.VersionV1Alpha1,
-		Timeout: 5 * time.Second,
-	}), nil
+	return nil, fmt.Errorf("unsupported asr.provider %q", cfg.Provider)
 }
 
 func normalizeASRProvider(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "", "funasr", "funasr_embedded":
-		return "funasr"
+	case "":
+		return "onnx"
 	case "onnx", "sherpa", "sherpa_onnx_streaming":
 		return "onnx"
 	default:
@@ -148,35 +85,6 @@ func sherpaONNXModelPathForPrecision(modelType, precision, path string) string {
 	}
 	return path
 }
-
-func asrWebsocketURL(host string, port int) string {
-	return fmt.Sprintf("ws://%s:%d/ws", host, port)
-}
-
-func asrRuntimeArgsFromConfig(cfg config.ASRConfig) []string {
-	args := []string{
-		"serve",
-		"--addr", fmt.Sprintf("%s:%d", cfg.Host, asrProxyPort),
-		"--upstream-url", asrWebsocketURL(cfg.Host, cfg.Port),
-		"--mode", cfg.Mode,
-		"--model-dir", cfg.Models.ASR,
-		"--online-model-dir", cfg.Models.Online,
-		"--vad-dir", cfg.Models.VAD,
-		"--punc-dir", cfg.Models.Punc,
-		"--itn-dir", cfg.Models.ITN,
-	}
-	if cfg.FunASRBinaryPath != "" {
-		args = append(args, "--funasr-binary", cfg.FunASRBinaryPath)
-	}
-	return args
-}
-
-// asrProxyPort is the default port where the talka-asr-runtime proxy listens.
-// The proxy forwards WebSocket connections to the upstream FunASR service
-// running on the configured ASR port (cfg.Port, typically 10095).
-// Using a separate port avoids a circular reference where the proxy
-// would connect to itself instead of the upstream.
-const asrProxyPort = 19095
 
 func newLLMProviderFromConfig(cfg config.LLMConfig) (LLMProvider, error) {
 	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,11 @@ func TestManagedSidecarProviderStartsRuntimeAndUsesSidecarProtocol(t *testing.T)
 	default:
 		t.Fatal("manager EnsureRunning was not called before sidecar transcription")
 	}
+}
+
+func websocketURLFromHTTP(t *testing.T, raw string) string {
+	t.Helper()
+	return "ws" + strings.TrimPrefix(raw, "http")
 }
 
 func TestManagedSidecarProviderEnsureReadyRequiresSidecarProtocol(t *testing.T) {

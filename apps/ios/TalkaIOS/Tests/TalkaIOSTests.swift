@@ -503,6 +503,31 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertEqual(sessionClient.reconnectCalls, 1)
     }
 
+    func testMacConnectionMonitorDisconnectsPairedShellWhenMacGoesAway() async {
+        let identity = pairedMacIdentity()
+        let monitor = ManualMacConnectionMonitor()
+        var clearedSecureSessions = 0
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(reconnectResults: [.success(identity)]),
+            identityStore: FakePairedIdentityStore(initialIdentity: identity),
+            disconnectSecureSession: {
+                clearedSecureSessions += 1
+            },
+            macConnectionMonitor: monitor
+        )
+
+        await viewModel.reconnectToKnownMac()
+        monitor.finishAsDisconnected()
+        await waitUntil { viewModel.connectionState == .idle }
+
+        XCTAssertEqual(monitor.waitCalls, 1)
+        XCTAssertEqual(clearedSecureSessions, 1)
+        XCTAssertNil(viewModel.currentMacName)
+        XCTAssertEqual(viewModel.knownMacName, "Darluc's MacBook Pro")
+        XCTAssertEqual(viewModel.lastErrorMessage, "The Mac disconnected. Start Talka on the Mac and reconnect.")
+    }
+
     func testPowerButtonRequestsPairingWhenNoKnownMacIsAvailable() async {
         let viewModel = RemoteMicShellViewModel(
             discoveryBrowser: FakeDiscoveryBrowser(),
@@ -783,6 +808,7 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertTrue(environment.sessionClient is SecureRemotePairingSessionClient)
         XCTAssertTrue(environment.audioStreamClient is SecureAudioStreamClient)
         XCTAssertTrue(environment.identityStore is KeychainPairedIdentityStore)
+        XCTAssertTrue(environment.macConnectionMonitor is SecureSessionMacConnectionMonitor)
     }
 
     func testSecureAudioStreamClientKeepsEncryptedSequenceMonotonicAcrossRecordingsInSameSession() async throws {
@@ -1320,6 +1346,45 @@ private final class FakePairedIdentityStore: PairedIdentityStoring {
 
     func clearPairedIdentity() throws {
         identity = nil
+    }
+}
+
+private final class ManualMacConnectionMonitor: MacConnectionMonitoring {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var shouldFinish = false
+    private(set) var waitCalls = 0
+
+    func waitUntilDisconnected() async {
+        waitCalls += 1
+        if shouldFinish {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            if self.shouldFinish {
+                continuation.resume()
+                return
+            }
+            self.continuation = continuation
+        }
+    }
+
+    func finishAsDisconnected() {
+        shouldFinish = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private func waitUntil(
+    timeoutNanoseconds: UInt64 = 500_000_000,
+    condition: @escaping @MainActor () -> Bool
+) async {
+    let deadline = Date().addingTimeInterval(Double(timeoutNanoseconds) / 1_000_000_000)
+    while Date() < deadline {
+        if await condition() {
+            return
+        }
+        await Task.yield()
     }
 }
 

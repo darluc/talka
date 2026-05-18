@@ -6,7 +6,7 @@ Talka is a local-first voice input system. An iOS device acts as a remote microp
 
 - iOS stays focused on connection, pairing, and voice capture.
 - macOS owns service status, pairing PIN, AI/ASR configuration, connected-device visibility, diagnostics, and text insertion.
-- ASR defaults to the app-bundled embedded FunASR runtime.
+- ASR uses the app-bundled sherpa-onnx streaming recognizer, defaulting to the bilingual zh-en Paraformer model.
 - AI cleanup defaults to a configurable Ollama/OpenAI-compatible endpoint.
 - Text insertion uses clipboard write plus a macOS Accessibility-driven Cmd+V, guarded by a native preflight check.
 
@@ -17,8 +17,8 @@ The current settings screen is intentionally compact:
 - Top status area combines service state, Accessibility state, pairing PIN, and PIN countdown.
 - The `Service listening` pill can trigger service recovery or test the service path.
 - The Accessibility pill reflects native `AXIsProcessTrusted()` status and opens the permission flow.
-- `Interfaces` contains AI endpoint, AI model, timeout, and ASR mode.
-- ASR mode is a product-level choice: `FunASR` or `ONNX`; it is separate from FunASR's internal `2pass` runtime mode.
+- `Interfaces` contains AI endpoint, AI model, timeout, and ONNX model selection.
+- ASR is ONNX-only in the product surface; legacy ASR provider names are migrated to ONNX config when the app refreshes its bundled runtime paths.
 - AI API and ASR API health are visible inline.
 - Connected devices appear at the bottom with device name and connection time.
 - Footer actions are limited to Diagnostics, Reset Changes, and Save.

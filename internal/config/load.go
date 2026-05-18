@@ -132,26 +132,9 @@ func (cfg Config) Validate(baseDir string) error {
 	}
 
 	switch asrProvider {
-	case "funasr", "funasr_onnx", "":
-		if strings.TrimSpace(cfg.ASR.RuntimePath) == "" {
-			appendIssue("asr.runtime_path", cfg.ASR.RuntimePath, "must not be empty")
-		} else if err := mustExist(baseDir, cfg.ASR.RuntimePath); err != nil {
-			appendIssue("asr.runtime_path", cfg.ASR.RuntimePath, err.Error())
-		}
-		validatePath("asr.models.asr", cfg.ASR.Models.ASR)
-		validatePath("asr.models.online", cfg.ASR.Models.Online)
-		validatePath("asr.models.vad", cfg.ASR.Models.VAD)
-		validatePath("asr.models.punc", cfg.ASR.Models.Punc)
-		validatePath("asr.models.itn", cfg.ASR.Models.ITN)
-		if strings.TrimSpace(cfg.ASR.Models.LM) != "" {
-			validatePath("asr.models.lm", cfg.ASR.Models.LM)
-		}
-		if strings.TrimSpace(cfg.ASR.HotwordPath) != "" {
-			validatePath("asr.hotword_path", cfg.ASR.HotwordPath)
-		}
 	case "onnx":
 		if strings.TrimSpace(cfg.ASR.SherpaONNX.ModelProfile) == "" {
-			cfg.ASR.SherpaONNX.ModelProfile = "paraformer-trilingual"
+			cfg.ASR.SherpaONNX.ModelProfile = "paraformer-bilingual"
 		}
 		modelType := strings.TrimSpace(cfg.ASR.SherpaONNX.ModelType)
 		if modelType == "" {
@@ -189,7 +172,7 @@ func (cfg Config) Validate(baseDir string) error {
 			appendIssue("asr.sherpa_onnx.provider", cfg.ASR.SherpaONNX.Provider, "must not be empty")
 		}
 	default:
-		appendIssue("asr.provider", cfg.ASR.Provider, "must be one of funasr, onnx")
+		appendIssue("asr.provider", cfg.ASR.Provider, "must be onnx")
 	}
 
 	if strings.TrimSpace(cfg.LLM.Provider) == "" {
@@ -223,8 +206,8 @@ func (cfg Config) Validate(baseDir string) error {
 
 func normalizeASRProvider(provider string) string {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "", "funasr", "funasr_embedded":
-		return "funasr"
+	case "":
+		return "onnx"
 	case "onnx", "sherpa", "sherpa_onnx_streaming":
 		return "onnx"
 	default:

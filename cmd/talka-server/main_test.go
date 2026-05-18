@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -53,44 +54,10 @@ func TestRunRejectsInvalidConfigPath(t *testing.T) {
 
 func TestRunServesStatusJSON(t *testing.T) {
 	root := t.TempDir()
-	mustMkdir(t, root, "runtime")
-	mustMkdir(t, root, "models/asr")
-	mustMkdir(t, root, "models/online")
-	mustMkdir(t, root, "models/vad")
-	mustMkdir(t, root, "models/punc")
-	mustMkdir(t, root, "models/itn")
+	mustWriteONNXModelFiles(t, root)
 
 	configPath := filepath.Join(root, "config.yaml")
-	configBody := []byte(`server:
-  bind_host: 127.0.0.1
-  port: 0
-  service_name: Talka
-asr:
-  provider: funasr_onnx
-  runtime_path: runtime
-  host: 127.0.0.1
-  port: 10095
-  mode: twopass
-  sample_rate: 16000
-  models:
-    asr: models/asr
-    online: models/online
-    vad: models/vad
-    punc: models/punc
-    itn: models/itn
-llm:
-  provider: ollama
-  base_url: http://localhost:11434
-  model: qwen3:8b
-  timeout_seconds: 30
-injection:
-  mode: clipboard_paste
-  restore_clipboard: true
-logging:
-  level: info
-  capture_audio: false
-  capture_transcript: false
-`)
+	configBody := testServerConfigBody()
 	if err := os.WriteFile(configPath, configBody, 0o644); err != nil {
 		t.Fatalf("WriteFile(%q) error = %v", configPath, err)
 	}
@@ -136,44 +103,10 @@ logging:
 
 func TestRunStartsAndStopsDiscoveryPublisher(t *testing.T) {
 	root := t.TempDir()
-	mustMkdir(t, root, "runtime")
-	mustMkdir(t, root, "models/asr")
-	mustMkdir(t, root, "models/online")
-	mustMkdir(t, root, "models/vad")
-	mustMkdir(t, root, "models/punc")
-	mustMkdir(t, root, "models/itn")
+	mustWriteONNXModelFiles(t, root)
 
 	configPath := filepath.Join(root, "config.yaml")
-	configBody := []byte(`server:
-  bind_host: 127.0.0.1
-  port: 0
-  service_name: Talka
-asr:
-  provider: funasr_onnx
-  runtime_path: runtime
-  host: 127.0.0.1
-  port: 10095
-  mode: twopass
-  sample_rate: 16000
-  models:
-    asr: models/asr
-    online: models/online
-    vad: models/vad
-    punc: models/punc
-    itn: models/itn
-llm:
-  provider: ollama
-  base_url: http://localhost:11434
-  model: qwen3:8b
-  timeout_seconds: 30
-injection:
-  mode: clipboard_paste
-  restore_clipboard: true
-logging:
-  level: info
-  capture_audio: false
-  capture_transcript: false
-`)
+	configBody := testServerConfigBody()
 
 	if err := os.WriteFile(configPath, configBody, 0o644); err != nil {
 		t.Fatalf("WriteFile(%q) error = %v", configPath, err)
@@ -224,44 +157,10 @@ logging:
 
 func TestRunContinuesWhenDiscoveryPublisherUnavailable(t *testing.T) {
 	root := t.TempDir()
-	mustMkdir(t, root, "runtime")
-	mustMkdir(t, root, "models/asr")
-	mustMkdir(t, root, "models/online")
-	mustMkdir(t, root, "models/vad")
-	mustMkdir(t, root, "models/punc")
-	mustMkdir(t, root, "models/itn")
+	mustWriteONNXModelFiles(t, root)
 
 	configPath := filepath.Join(root, "config.yaml")
-	configBody := []byte(`server:
-  bind_host: 127.0.0.1
-  port: 0
-  service_name: Talka
-asr:
-  provider: funasr_onnx
-  runtime_path: runtime
-  host: 127.0.0.1
-  port: 10095
-  mode: twopass
-  sample_rate: 16000
-  models:
-    asr: models/asr
-    online: models/online
-    vad: models/vad
-    punc: models/punc
-    itn: models/itn
-llm:
-  provider: ollama
-  base_url: http://localhost:11434
-  model: qwen3:8b
-  timeout_seconds: 30
-injection:
-  mode: clipboard_paste
-  restore_clipboard: true
-logging:
-  level: info
-  capture_audio: false
-  capture_transcript: false
-`)
+	configBody := testServerConfigBody()
 
 	if err := os.WriteFile(configPath, configBody, 0o644); err != nil {
 		t.Fatalf("WriteFile(%q) error = %v", configPath, err)
@@ -333,6 +232,68 @@ func mustMkdir(t *testing.T, root, rel string) {
 	if err := os.MkdirAll(filepath.Join(root, rel), 0o755); err != nil {
 		t.Fatalf("MkdirAll(%q) error = %v", rel, err)
 	}
+}
+
+func mustWriteONNXModelFiles(t *testing.T, root string) {
+	t.Helper()
+	_ = root
+	_ = repoModelDir(t)
+}
+
+func testServerConfigBody() []byte {
+	modelDir := repoModelDirForServerTest()
+	return []byte(fmt.Sprintf(`server:
+  bind_host: 127.0.0.1
+  port: 0
+  service_name: Talka
+asr:
+  provider: onnx
+  host: 127.0.0.1
+  port: 10095
+  mode: streaming
+  sample_rate: 16000
+  startup_timeout_seconds: 180
+  sherpa_onnx:
+    model_profile: paraformer-bilingual
+    model_type: paraformer
+    precision: int8
+    tokens_path: %s
+    encoder_path: %s
+    decoder_path: %s
+    joiner_path: ""
+    num_threads: 2
+    decoding_method: greedy_search
+    feature_dim: 80
+    provider: cpu
+llm:
+  provider: ollama
+  base_url: http://localhost:11434
+  model: qwen3:8b
+  timeout_seconds: 30
+injection:
+  mode: clipboard_paste
+  restore_clipboard: true
+logging:
+  level: info
+  capture_audio: false
+  capture_transcript: false
+`, filepath.Join(modelDir, "tokens.txt"), filepath.Join(modelDir, "encoder.int8.onnx"), filepath.Join(modelDir, "decoder.int8.onnx")))
+}
+
+func repoModelDir(t *testing.T) string {
+	t.Helper()
+	dir := repoModelDirForServerTest()
+	for _, name := range []string{"tokens.txt", "encoder.int8.onnx", "decoder.int8.onnx"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("required sherpa model %s missing: %v", name, err)
+		}
+	}
+	return dir
+}
+
+func repoModelDirForServerTest() string {
+	wd, _ := os.Getwd()
+	return filepath.Clean(filepath.Join(wd, "../..", "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en"))
 }
 
 func waitForListenLine(t *testing.T, out *strings.Builder) string {

@@ -65,23 +65,10 @@ struct EmbeddedRuntimeConfigGenerator: RuntimeConfigGenerator {
         )
     }
 
-    private func ensureEmbeddedASRProvider(in yaml: String) -> String {
-        if yaml.range(of: #"(?m)^asr:\n[ \t]+provider:"#, options: .regularExpression) != nil {
-            return yaml
-        }
-
-        return yaml.replacingOccurrences(
-            of: #"(?m)^asr:\n"#,
-            with: "asr:\n  provider: funasr\n",
-            options: .regularExpression
-        )
-    }
-
     private func replaceASRBlock(in yaml: String, resourcesURL: URL, preservingProviderFrom originalYAML: String? = nil) -> String {
         let sourceYAML = originalYAML ?? yaml
         let block = defaultASRYAML(
             resourcesURL: resourcesURL,
-            preferredProvider: preferredASRProvider(in: sourceYAML),
             preferredSherpaProfile: preferredSherpaProfile(in: sourceYAML)
         )
         if yaml.range(of: #"(?ms)^asr:\n.*?(?=^llm:\n)"#, options: .regularExpression) != nil {
@@ -173,22 +160,9 @@ logging:
 """
 	}
 
-    private func defaultASRYAML(resourcesURL: URL, preferredProvider: String? = nil, preferredSherpaProfile: String? = nil) -> String {
-        let provider = preferredProvider ?? "auto"
-        if provider != "funasr", let sherpaModel = availableSherpaModel(resourcesURL: resourcesURL, preferredProfile: preferredSherpaProfile) {
-            return sherpaASRYAML(resourcesURL: resourcesURL, model: sherpaModel)
-        }
-        return funasrASRYAML(resourcesURL: resourcesURL)
-    }
-
-    private func preferredASRProvider(in yaml: String) -> String? {
-        if yaml.range(of: #"(?m)^\s*provider:\s*(funasr|funasr_embedded|funasr_external|funasr_container|sidecar)\s*$"#, options: .regularExpression) != nil {
-            return "funasr"
-        }
-        if yaml.range(of: #"(?m)^\s*provider:\s*(onnx|sherpa|sherpa_onnx_streaming)\s*$"#, options: .regularExpression) != nil {
-            return "onnx"
-        }
-        return nil
+    private func defaultASRYAML(resourcesURL: URL, preferredSherpaProfile: String? = nil) -> String {
+        let sherpaModel = availableSherpaModel(resourcesURL: resourcesURL, preferredProfile: preferredSherpaProfile) ?? defaultSherpaModel(resourcesURL: resourcesURL)
+        return sherpaASRYAML(model: sherpaModel)
     }
 
     private func preferredSherpaProfile(in yaml: String) -> String? {
@@ -221,19 +195,19 @@ logging:
 
         let candidates = [
             SherpaModelBundle(
-                profile: "paraformer-trilingual",
+                profile: "paraformer-bilingual",
                 modelType: "paraformer",
                 precision: "int8",
-                directory: resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en"),
+                directory: resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-bilingual-zh-en"),
                 encoderFile: "encoder.int8.onnx",
                 decoderFile: "decoder.int8.onnx",
                 joinerFile: ""
             ),
             SherpaModelBundle(
-                profile: "paraformer-bilingual",
+                profile: "paraformer-trilingual",
                 modelType: "paraformer",
                 precision: "int8",
-                directory: resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-bilingual-zh-en"),
+                directory: resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en"),
                 encoderFile: "encoder.int8.onnx",
                 decoderFile: "decoder.int8.onnx",
                 joinerFile: ""
@@ -260,34 +234,29 @@ logging:
         }
     }
 
-    private func sherpaASRYAML(resourcesURL: URL, model: SherpaModelBundle) -> String {
-        let runtimeURL = resourcesURL.appendingPathComponent("talka-asr-runtime")
-        let funasrBinaryURL = resourcesURL.appendingPathComponent("funasr-wss-server-2pass")
-        let funasrModelsURL = resourcesURL.appendingPathComponent("models/funasr")
-        let hotwordsPath = hotwordsPath(resourcesURL: resourcesURL)
+    private func defaultSherpaModel(resourcesURL: URL) -> SherpaModelBundle {
+        SherpaModelBundle(
+            profile: "paraformer-bilingual",
+            modelType: "paraformer",
+            precision: "int8",
+            directory: resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-bilingual-zh-en"),
+            encoderFile: "encoder.int8.onnx",
+            decoderFile: "decoder.int8.onnx",
+            joinerFile: ""
+        )
+    }
+
+    private func sherpaASRYAML(model: SherpaModelBundle) -> String {
         let joinerPath = model.joinerFile.isEmpty ? "" : model.directory.appendingPathComponent(model.joinerFile).path
 
         return """
 asr:
   provider: onnx
-  runtime_path: \(runtimeURL.path)
-  funasr_binary_path: \(funasrBinaryURL.path)
   host: 127.0.0.1
   port: 10095
   mode: streaming
   sample_rate: 16000
   startup_timeout_seconds: 180
-  container_image: ""
-  container_name: ""
-  download_dir: ""
-  hotword_path: \(hotwordsPath)
-  models:
-    asr: \(funasrModelsURL.appendingPathComponent("paraformer-zh-onnx").path)
-    online: \(funasrModelsURL.appendingPathComponent("paraformer-zh-online-onnx").path)
-    vad: \(funasrModelsURL.appendingPathComponent("fsmn-vad-onnx").path)
-    punc: \(funasrModelsURL.appendingPathComponent("ct-punc-onnx").path)
-    itn: \(funasrModelsURL.appendingPathComponent("itn-zh").path)
-    lm: ""
   sherpa_onnx:
     model_profile: \(model.profile)
     model_type: \(model.modelType)
@@ -296,48 +265,6 @@ asr:
     encoder_path: \(model.directory.appendingPathComponent(model.encoderFile).path)
     decoder_path: \(model.directory.appendingPathComponent(model.decoderFile).path)
     joiner_path: \(joinerPath)
-    num_threads: 2
-    decoding_method: greedy_search
-    feature_dim: 80
-    provider: cpu
-"""
-    }
-
-    private func funasrASRYAML(resourcesURL: URL) -> String {
-        let runtimeURL = resourcesURL.appendingPathComponent("talka-asr-runtime")
-        let funasrBinaryURL = resourcesURL.appendingPathComponent("funasr-wss-server-2pass")
-        let modelsURL = resourcesURL.appendingPathComponent("models/funasr")
-        let hotwordsPath = hotwordsPath(resourcesURL: resourcesURL)
-
-        return """
-asr:
-  provider: funasr
-  runtime_path: \(runtimeURL.path)
-  funasr_binary_path: \(funasrBinaryURL.path)
-  host: 127.0.0.1
-  port: 10095
-  mode: 2pass
-  sample_rate: 16000
-  startup_timeout_seconds: 180
-  container_image: ""
-  container_name: ""
-  download_dir: ""
-  hotword_path: \(hotwordsPath)
-  models:
-    asr: \(modelsURL.appendingPathComponent("paraformer-zh-onnx").path)
-    online: \(modelsURL.appendingPathComponent("paraformer-zh-online-onnx").path)
-    vad: \(modelsURL.appendingPathComponent("fsmn-vad-onnx").path)
-    punc: \(modelsURL.appendingPathComponent("ct-punc-onnx").path)
-    itn: \(modelsURL.appendingPathComponent("itn-zh").path)
-    lm: ""
-  sherpa_onnx:
-    model_profile: paraformer-trilingual
-    model_type: paraformer
-    precision: int8
-    tokens_path: \(resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/tokens.txt").path)
-    encoder_path: \(resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/encoder.int8.onnx").path)
-    decoder_path: \(resourcesURL.appendingPathComponent("models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/decoder.int8.onnx").path)
-    joiner_path: ""
     num_threads: 2
     decoding_method: greedy_search
     feature_dim: 80

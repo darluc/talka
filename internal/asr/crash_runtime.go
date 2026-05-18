@@ -45,7 +45,7 @@ func (r *CrashRuntime) serveSession(ctx context.Context, conn *websocketConn) {
 				writeProtocolError(conn, protocol.ErrorCodeInvalidVersion, "unsupported protocol version")
 				return
 			}
-			_ = conn.WriteJSON(protocol.ServerHello{Envelope: protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeServerHello}, RuntimeName: "funasr-crash", Ready: true})
+			_ = conn.WriteJSON(protocol.ServerHello{Envelope: protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeServerHello}, RuntimeName: "asr-crash", Ready: true})
 		case protocol.AudioStart:
 			if err := protocol.ValidateAudioMetadata(typed.Metadata); err != nil {
 				writeProtocolError(conn, protocol.ErrorCodeOf(err), err.Error())

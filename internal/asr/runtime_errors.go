@@ -92,3 +92,7 @@ func NewRuntimeErrorWithDiagnostic(code, message, diagnostic string, cause error
 func IsRuntimeUnavailableError(err error) bool {
 	return isRuntimeUnavailable(err)
 }
+
+func isRuntimeUnavailable(err error) bool {
+	return RuntimeErrorCodeOf(err) == ErrorCodeRuntimeUnavailable
+}

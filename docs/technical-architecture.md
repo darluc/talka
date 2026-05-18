@@ -7,8 +7,7 @@ Talka uses a split local architecture:
 - iOS app: audio capture and user-facing microphone controls.
 - macOS Go service: pairing, encrypted transport, audio session control, ASR orchestration, Ollama post-processing, and text insertion.
 - macOS SwiftUI shell: menu bar UI, settings, diagnostics, native Accessibility state, and the local paste broker.
-- Embedded FunASR C++/ONNX Runtime: local streaming speech recognition backend packaged inside the macOS app bundle.
-- Sherpa ONNX: in-process streaming recognizer exposed as the ONNX ASR mode.
+- Sherpa ONNX: in-process local streaming recognizer packaged with the macOS app bundle. The default model profile is the bilingual zh-en Paraformer bundle.
 - Ollama: local LLM post-processing.
 
 ```mermaid
@@ -16,10 +15,8 @@ flowchart LR
   IOS["iOS App\nSwiftUI + AVAudioEngine"] --> DISC["Bonjour/mDNS\n_talka._tcp"]
   IOS --> ENC["Encrypted Audio Stream\nWebSocket or QUIC-like frames"]
   ENC --> GO["macOS Go Service"]
-  GO --> ASR["Embedded FunASR Runtime\nStreaming ASR"]
+  GO --> ASR["Sherpa ONNX\nIn-process Streaming ASR"]
   ASR --> GO
-  GO --> ONNX["Sherpa ONNX\nIn-process Streaming ASR"]
-  ONNX --> GO
   GO --> OLLAMA["Ollama\nText Cleanup + Final Polish"]
   OLLAMA --> GO
   GO --> PB["Unix Socket Paste Broker\nSwift/App Process"]

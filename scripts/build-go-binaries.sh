@@ -3,7 +3,7 @@ set -eu
 
 OUTPUT_DIR="./bin"
 FOR_BUNDLE=""
-BINARIES="${BINARIES:-talka-server talka-asr-runtime}"
+BINARIES="${BINARIES:-talka-server}"
 
 while [ $# -gt 0 ]; do
   case "${1}" in

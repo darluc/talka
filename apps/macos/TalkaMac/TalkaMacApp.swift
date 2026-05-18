@@ -17,43 +17,22 @@ enum ShellWindowID {
     static let pairing = "pairing"
 }
 
-enum ASRProviderOption: String, CaseIterable, Identifiable {
-    case funasr = "funasr"
-    case onnx = "onnx"
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .funasr:
-            return "FunASR"
-        case .onnx:
-            return "ONNX"
-        }
-    }
-}
-
 enum ASRModeOption: String, CaseIterable, Identifiable {
-    case funasr = "funasr"
     case onnx = "onnx"
 
     var id: String { rawValue }
 
     static func normalizedProvider(_ provider: String) -> String {
         switch provider {
-        case "onnx", "sherpa", "sherpa_onnx_streaming":
+        case "onnx", "sherpa", "sherpa_onnx_streaming", "funasr", "funasr_embedded", "funasr_external", "funasr_container", "sidecar":
             return ASRModeOption.onnx.rawValue
-        case "funasr", "funasr_embedded", "funasr_external", "funasr_container", "sidecar":
-            return ASRModeOption.funasr.rawValue
         default:
-            return ASRModeOption.funasr.rawValue
+            return ASRModeOption.onnx.rawValue
         }
     }
 
     var title: String {
         switch self {
-        case .funasr:
-            return "FunASR"
         case .onnx:
             return "ONNX"
         }
@@ -96,7 +75,7 @@ enum ONNXModelProfileOption: String, CaseIterable, Identifiable {
             config.encoderPath.contains("streaming-paraformer-bilingual-zh-en") {
             return .paraformerBilingual
         }
-        return .paraformerTrilingual
+        return .paraformerBilingual
     }
 }
 
@@ -329,7 +308,7 @@ struct ControlStatus: Equatable {
 
 struct ControlASRStatus: Codable, Equatable {
     var provider: String
-    var runtimePath: String
+    var modelProfile: String
     var sampleRate: Int
     var mode: String
     var ready: Bool
@@ -337,7 +316,7 @@ struct ControlASRStatus: Codable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case provider
-        case runtimePath = "runtime_path"
+        case modelProfile = "model_profile"
         case sampleRate = "sample_rate"
         case mode
         case ready
@@ -593,31 +572,18 @@ struct ControlConfig: Equatable {
         server: ControlServerConfig(bindHost: "127.0.0.1", port: 8080, serviceName: "Talka"),
         asr: ControlASRConfig(
             provider: "onnx",
-            runtimePath: "talka-asr-runtime",
             host: "127.0.0.1",
             port: 10095,
             mode: "streaming",
             sampleRate: 16_000,
             startupTimeoutSeconds: 180,
-            containerImage: "",
-            containerName: "",
-            downloadDir: "",
-            hotwordPath: "",
-            models: ControlASRModelsConfig(
-                asr: "models/funasr/paraformer-zh-onnx",
-                online: "models/funasr/paraformer-zh-online-onnx",
-                vad: "models/funasr/fsmn-vad-onnx",
-                punc: "models/funasr/ct-punc-onnx",
-                itn: "models/funasr/itn-zh",
-                lm: ""
-            ),
             sherpaONNX: ControlSherpaONNXConfig(
-                modelProfile: ONNXModelProfileOption.paraformerTrilingual.rawValue,
+                modelProfile: ONNXModelProfileOption.paraformerBilingual.rawValue,
                 modelType: "paraformer",
                 precision: "int8",
-                tokensPath: "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/tokens.txt",
-                encoderPath: "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/encoder.int8.onnx",
-                decoderPath: "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/decoder.int8.onnx",
+                tokensPath: "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/tokens.txt",
+                encoderPath: "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/encoder.int8.onnx",
+                decoderPath: "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/decoder.int8.onnx",
                 joinerPath: "",
                 numThreads: 2,
                 decodingMethod: "greedy_search",
@@ -645,90 +611,51 @@ struct ControlServerConfig: Codable, Equatable {
 
 struct ControlASRConfig: Codable, Equatable {
     var provider: String
-    var runtimePath: String
     var host: String
     var port: Int
     var mode: String
     var sampleRate: Int
     var startupTimeoutSeconds: Int
-    var containerImage: String
-    var containerName: String
-    var downloadDir: String
-    var hotwordPath: String
-    var models: ControlASRModelsConfig
     var sherpaONNX: ControlSherpaONNXConfig
 
     init(
         provider: String,
-        runtimePath: String,
         host: String,
         port: Int,
         mode: String,
         sampleRate: Int,
         startupTimeoutSeconds: Int,
-        containerImage: String,
-        containerName: String,
-        downloadDir: String,
-        hotwordPath: String,
-        models: ControlASRModelsConfig,
         sherpaONNX: ControlSherpaONNXConfig = .default
     ) {
         self.provider = ASRModeOption.normalizedProvider(provider)
-        self.runtimePath = runtimePath
         self.host = host
         self.port = port
         self.mode = mode
         self.sampleRate = sampleRate
         self.startupTimeoutSeconds = startupTimeoutSeconds
-        self.containerImage = containerImage
-        self.containerName = containerName
-        self.downloadDir = downloadDir
-        self.hotwordPath = hotwordPath
-        self.models = models
         self.sherpaONNX = sherpaONNX
     }
 
     enum CodingKeys: String, CodingKey {
         case provider
-        case runtimePath = "runtime_path"
         case host
         case port
         case mode
         case sampleRate = "sample_rate"
         case startupTimeoutSeconds = "startup_timeout_seconds"
-        case containerImage = "container_image"
-        case containerName = "container_name"
-        case downloadDir = "download_dir"
-        case hotwordPath = "hotword_path"
-        case models
         case sherpaONNX = "sherpa_onnx"
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         provider = ASRModeOption.normalizedProvider(try container.decode(String.self, forKey: .provider))
-        runtimePath = try container.decode(String.self, forKey: .runtimePath)
         host = try container.decode(String.self, forKey: .host)
         port = try container.decode(Int.self, forKey: .port)
         mode = try container.decode(String.self, forKey: .mode)
         sampleRate = try container.decode(Int.self, forKey: .sampleRate)
         startupTimeoutSeconds = try container.decode(Int.self, forKey: .startupTimeoutSeconds)
-        containerImage = try container.decode(String.self, forKey: .containerImage)
-        containerName = try container.decode(String.self, forKey: .containerName)
-        downloadDir = try container.decode(String.self, forKey: .downloadDir)
-        hotwordPath = try container.decode(String.self, forKey: .hotwordPath)
-        models = try container.decode(ControlASRModelsConfig.self, forKey: .models)
         sherpaONNX = try container.decodeIfPresent(ControlSherpaONNXConfig.self, forKey: .sherpaONNX) ?? .default
     }
-}
-
-struct ControlASRModelsConfig: Codable, Equatable {
-    var asr: String
-    var online: String
-    var vad: String
-    var punc: String
-    var itn: String
-    var lm: String
 }
 
 struct ControlSherpaONNXConfig: Codable, Equatable {
@@ -745,12 +672,12 @@ struct ControlSherpaONNXConfig: Codable, Equatable {
     var provider: String
 
     static let `default` = ControlSherpaONNXConfig(
-        modelProfile: ONNXModelProfileOption.paraformerTrilingual.rawValue,
+        modelProfile: ONNXModelProfileOption.paraformerBilingual.rawValue,
         modelType: "paraformer",
         precision: "int8",
-        tokensPath: "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/tokens.txt",
-        encoderPath: "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/encoder.int8.onnx",
-        decoderPath: "models/sherpa-onnx/streaming-paraformer-trilingual-zh-cantonese-en/decoder.int8.onnx",
+        tokensPath: "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/tokens.txt",
+        encoderPath: "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/encoder.int8.onnx",
+        decoderPath: "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en/decoder.int8.onnx",
         joinerPath: "",
         numThreads: 2,
         decodingMethod: "greedy_search",
@@ -773,7 +700,7 @@ struct ControlSherpaONNXConfig: Codable, Equatable {
     }
 
     init(
-        modelProfile: String = ONNXModelProfileOption.paraformerTrilingual.rawValue,
+        modelProfile: String = ONNXModelProfileOption.paraformerBilingual.rawValue,
         modelType: String,
         precision: String,
         tokensPath: String,
@@ -1429,15 +1356,10 @@ final class AppShellViewModel: ObservableObject {
 
         do {
             var updatedConfig = config
-            if ASRModeOption.normalizedProvider(updatedConfig.asr.provider) == ASRModeOption.onnx.rawValue {
-                updatedConfig.asr.provider = ASRModeOption.onnx.rawValue
-                updatedConfig.asr.mode = "streaming"
-                let profile = ONNXModelProfileOption.inferred(from: updatedConfig.asr.sherpaONNX)
-                updatedConfig.asr.sherpaONNX.apply(profile: profile)
-            } else {
-                updatedConfig.asr.provider = ASRModeOption.funasr.rawValue
-                updatedConfig.asr.mode = "2pass"
-            }
+            updatedConfig.asr.provider = ASRModeOption.onnx.rawValue
+            updatedConfig.asr.mode = "streaming"
+            let profile = ONNXModelProfileOption.inferred(from: updatedConfig.asr.sherpaONNX)
+            updatedConfig.asr.sherpaONNX.apply(profile: profile)
             config = try await client.saveConfig(updatedConfig)
             lastUpdated = nowProvider()
             lastErrorMessage = nil
@@ -1792,12 +1714,8 @@ struct SettingsInterfacesPanel: View {
             return ("Unknown", .secondary)
         }
         if asr.ready {
-            let provider = ASRModeOption.normalizedProvider(viewModel.config.asr.provider)
-            if provider == ASRModeOption.onnx.rawValue {
-                let profile = ONNXModelProfileOption.inferred(from: viewModel.config.asr.sherpaONNX)
-                return ("Healthy · ONNX · \(profile.title)", .green)
-            }
-            return ("Healthy · FunASR", .green)
+            let profile = ONNXModelProfileOption.inferred(from: viewModel.config.asr.sherpaONNX)
+            return ("Healthy · ONNX · \(profile.title)", .green)
         }
         return (asr.error.map { "Error · \($0)" } ?? "Unavailable", .red)
     }
@@ -1826,24 +1744,6 @@ struct SettingsInterfacesPanel: View {
                 }
                 GridRow {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("ASR Mode")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Picker(
-                            "ASR Mode",
-                            selection: Binding(
-                                get: { ASRModeOption.normalizedProvider(viewModel.config.asr.provider) },
-                                set: { viewModel.config.asr.provider = ASRModeOption.normalizedProvider($0) }
-                            )
-                        ) {
-                            ForEach(ASRModeOption.allCases) { option in
-                                Text(option.title).tag(option.rawValue)
-                            }
-                        }
-                        .labelsHidden()
-                        .pickerStyle(.menu)
-                    }
-                    VStack(alignment: .leading, spacing: 6) {
                         Text("ONNX Model")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -1864,9 +1764,8 @@ struct SettingsInterfacesPanel: View {
                         }
                         .labelsHidden()
                         .pickerStyle(.menu)
-                        .disabled(ASRModeOption.normalizedProvider(viewModel.config.asr.provider) != ASRModeOption.onnx.rawValue)
                     }
-                    .gridCellColumns(2)
+                    .gridCellColumns(3)
                 }
             }
 
@@ -2099,7 +1998,7 @@ struct DiagnosticsView: View {
         }
         return (
             asr.ready ? "Ready" : "Unavailable",
-            asr.provider,
+            "\(asr.provider) · \(asr.modelProfile)",
             asr.ready ? .green : .red
         )
     }
@@ -2186,8 +2085,8 @@ struct DiagnosticsView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         DiagnosticPathRow(title: "Config", value: configPath)
                         DiagnosticPathRow(title: "Control API", value: viewModel.diagnosticsRows.first { $0.0 == "Control API" }?.1 ?? "Unknown")
-                        DiagnosticPathRow(title: "ASR Runtime", value: viewModel.status?.asr?.runtimePath ?? viewModel.config.asr.runtimePath)
-                        DiagnosticPathRow(title: "ASR Model", value: viewModel.config.asr.models.asr)
+                        DiagnosticPathRow(title: "ASR Provider", value: viewModel.status?.asr?.provider ?? viewModel.config.asr.provider)
+                        DiagnosticPathRow(title: "ASR Model", value: viewModel.config.asr.sherpaONNX.encoderPath)
                         DiagnosticPathRow(title: "Last Updated", value: viewModel.diagnosticsRows.first { $0.0 == "Last Refresh" }?.1 ?? "Never")
                     }
                 }

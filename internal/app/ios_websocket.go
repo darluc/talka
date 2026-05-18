@@ -67,6 +67,8 @@ func (a *App) handleIOSAudioStream(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
+	a.registerIOSAudioConn(conn)
+	defer a.unregisterIOSAudioConn(conn)
 	defer conn.Close()
 	traceID := newLatencyTraceID()
 	acceptedAt := time.Now()

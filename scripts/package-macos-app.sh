@@ -2,22 +2,82 @@
 set -eu
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
-DERIVED_DATA_PATH="${ROOT_DIR}/build/macos"
-PRODUCTS_DIR="${DERIVED_DATA_PATH}/Build/Products/Release"
-APP_PATH="${PRODUCTS_DIR}/TalkaMac.app"
+CONFIGURATION="Release"
+ARCH="universal"
 DIST_DIR="${ROOT_DIR}/dist"
-ZIP_PATH="${DIST_DIR}/TalkaMac-macOS.zip"
-BIN_APP_PATH="${ROOT_DIR}/bin/TalkaMac.app"
+
+show_usage() {
+  printf 'usage: %s [--arch arm64|x86_64|universal] [--configuration <name>] [--dist-dir <dir>]\n' "$0"
+}
+
+usage() {
+  show_usage >&2
+  exit 2
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --arch)
+      [ -n "${2-}" ] || usage
+      ARCH="$2"
+      shift 2
+      ;;
+    --configuration)
+      [ -n "${2-}" ] || usage
+      CONFIGURATION="$2"
+      shift 2
+      ;;
+    --dist-dir)
+      [ -n "${2-}" ] || usage
+      DIST_DIR="$2"
+      shift 2
+      ;;
+    --help|-h)
+      show_usage
+      exit 0
+      ;;
+    *)
+      usage
+      ;;
+  esac
+done
+
+case "$ARCH" in
+  arm64)
+    BUILD_ARCHS="arm64"
+    ARTIFACT_ARCH="arm64"
+    ;;
+  x86_64)
+    BUILD_ARCHS="x86_64"
+    ARTIFACT_ARCH="x86_64"
+    ;;
+  universal)
+    BUILD_ARCHS="arm64 x86_64"
+    ARTIFACT_ARCH="universal"
+    ;;
+  *)
+    printf 'packaging failed: unsupported arch %s\n' "$ARCH" >&2
+    exit 2
+    ;;
+esac
+
+DERIVED_DATA_PATH="${ROOT_DIR}/build/macos-${ARTIFACT_ARCH}"
+PRODUCTS_DIR="${DERIVED_DATA_PATH}/Build/Products/${CONFIGURATION}"
+APP_PATH="${PRODUCTS_DIR}/TalkaMac.app"
+ZIP_PATH="${DIST_DIR}/TalkaMac-macOS-${ARTIFACT_ARCH}.zip"
+BIN_APP_PATH="${ROOT_DIR}/bin/TalkaMac-${ARTIFACT_ARCH}.app"
 
 mkdir -p "$DIST_DIR"
 rm -rf "$DERIVED_DATA_PATH" "$ZIP_PATH"
 
 cd "$ROOT_DIR/apps"
-xcodebuild \
+ARCHS="$BUILD_ARCHS" xcodebuild \
   -workspace Talka.xcworkspace \
   -scheme TalkaMac \
-  -configuration Release \
+  -configuration "$CONFIGURATION" \
   -derivedDataPath "$DERIVED_DATA_PATH" \
+  ARCHS="$BUILD_ARCHS" \
+  ONLY_ACTIVE_ARCH=NO \
   build
 
 if [ ! -d "$APP_PATH" ]; then

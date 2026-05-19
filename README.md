@@ -59,6 +59,24 @@ Shortcut flow:
 - Runtime and transport architecture: [docs/technical-architecture.md](docs/technical-architecture.md)
 - Engineering milestones: [docs/development-plan.md](docs/development-plan.md)
 
+## Release Builds
+
+Pushing a tag that starts with `v` triggers the GitHub release workflow:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The workflow builds and publishes these release artifacts:
+
+- `TalkaMac-macOS-arm64.zip`
+- `TalkaMac-macOS-x86_64.zip`
+- `TalkaIOS-iOS-simulator.zip`
+- `TalkaIOS-iOS-device-unsigned.zip`
+
+The macOS artifacts are ad-hoc signed app bundles. The iOS device artifact is unsigned because the project does not store signing credentials in the repository; a device-installable or TestFlight build needs Apple signing certificates and provisioning profiles configured in GitHub secrets.
+
 ## Development Verification
 
 Common checks:

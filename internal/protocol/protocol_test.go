@@ -17,6 +17,7 @@ func TestDecodeRoundTripsAllTransportMessages(t *testing.T) {
 		{name: "audio frame", msg: AudioFrame{Envelope: Envelope{Version: VersionV1Alpha1, Type: MessageTypeAudioFrame}, SessionID: "session-1", StreamID: "stream-1", Sequence: 1, PayloadBase64: "AAECAw=="}},
 		{name: "audio stop", msg: AudioStop{Envelope: Envelope{Version: VersionV1Alpha1, Type: MessageTypeAudioStop}, SessionID: "session-1", StreamID: "stream-1", LastSequence: 2}},
 		{name: "audio cancel", msg: AudioCancel{Envelope: Envelope{Version: VersionV1Alpha1, Type: MessageTypeAudioCancel}, SessionID: "session-1", StreamID: "stream-1", Reason: "user_cancelled"}},
+		{name: "key press", msg: KeyPress{Envelope: Envelope{Version: VersionV1Alpha1, Type: MessageTypeKeyPress}, SessionID: "session-1", Key: "enter", Modifiers: []KeyModifier{KeyModifierCommand, KeyModifierAlt, KeyModifierShift}}},
 		{name: "asr partial", msg: ASRPartial{Envelope: Envelope{Version: VersionV1Alpha1, Type: MessageTypeASRPartial}, SessionID: "session-1", StreamID: "stream-1", SegmentIndex: 1, Text: "你好"}},
 		{name: "asr final", msg: ASRFinal{Envelope: Envelope{Version: VersionV1Alpha1, Type: MessageTypeASRFinal}, SessionID: "session-1", StreamID: "stream-1", SegmentIndex: 1, Text: "你好，世界"}},
 		{name: "text final", msg: TextFinal{Envelope: Envelope{Version: VersionV1Alpha1, Type: MessageTypeTextFinal}, SessionID: "session-1", StreamID: "stream-1", Text: "你好，世界"}},
@@ -73,6 +74,8 @@ func messageTypeOf(msg any) MessageType {
 	case AudioStop:
 		return typed.Type
 	case AudioCancel:
+		return typed.Type
+	case KeyPress:
 		return typed.Type
 	case ASRPartial:
 		return typed.Type

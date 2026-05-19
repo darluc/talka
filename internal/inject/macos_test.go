@@ -180,6 +180,31 @@ func TestMacOSPasteInjectorInsertSkipsRestoreWhenUserChangesClipboard(t *testing
 	}
 }
 
+func TestMacOSPasteInjectorDelegatesKeyPressToPasteDriver(t *testing.T) {
+	driver := &stubPasteDriver{}
+	injector := NewMacOSPasteInjector(MacOSPasteOptions{
+		PasteDriver: driver,
+	})
+
+	err := injector.KeyPress(context.Background(), KeyPressRequest{
+		Key:       KeyEnter,
+		Modifiers: []KeyModifier{KeyModifierCommand, KeyModifierShift},
+	})
+	if err != nil {
+		t.Fatalf("KeyPress() error = %v", err)
+	}
+
+	if got, want := driver.keyPressCalls, 1; got != want {
+		t.Fatalf("keyPressCalls = %d, want %d", got, want)
+	}
+	if got, want := driver.keyPressRequests[0].Key, KeyEnter; got != want {
+		t.Fatalf("Key = %q, want %q", got, want)
+	}
+	if got, want := driver.keyPressRequests[0].Modifiers, []KeyModifier{KeyModifierCommand, KeyModifierShift}; !keyModifiersEqual(got, want) {
+		t.Fatalf("Modifiers = %v, want %v", got, want)
+	}
+}
+
 func TestSystemClipboardWriteForcesUTF8LocaleForPBcopy(t *testing.T) {
 	tempDir := t.TempDir()
 	envPath := filepath.Join(tempDir, "pbcopy.env")
@@ -246,9 +271,12 @@ func (m *memoryClipboard) Write(_ context.Context, value []byte) error {
 }
 
 type stubPasteDriver struct {
-	calls        int
-	err          error
-	preflightErr error
+	calls            int
+	err              error
+	preflightErr     error
+	keyPressCalls    int
+	keyPressRequests []KeyPressRequest
+	keyPressErr      error
 }
 
 func (s *stubPasteDriver) Preflight(context.Context) error {
@@ -258,6 +286,24 @@ func (s *stubPasteDriver) Preflight(context.Context) error {
 func (s *stubPasteDriver) Paste(context.Context) error {
 	s.calls++
 	return s.err
+}
+
+func (s *stubPasteDriver) KeyPress(_ context.Context, request KeyPressRequest) error {
+	s.keyPressCalls++
+	s.keyPressRequests = append(s.keyPressRequests, request)
+	return s.keyPressErr
+}
+
+func keyModifiersEqual(a, b []KeyModifier) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for index := range a {
+		if a[index] != b[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func noopWaiter(context.Context, time.Duration) error {

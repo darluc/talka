@@ -870,6 +870,107 @@ func TestIOSAudioWebSocketStreamsFramesBeforeAudioStop(t *testing.T) {
 	}
 }
 
+func TestIOSAudioWebSocketKeyPressBypassesASRAndLLM(t *testing.T) {
+	cfg, cfgPath := mustConfig(t)
+	probe := newStreamingProbeASR(asr.Result{Transcript: "should-not-run"})
+	injector := &recordingKeyInjector{}
+	service, err := NewWithPipeline(cfg, cfgPath, nil, NewPipeline(
+		probe,
+		&countingLLMProvider{},
+		injector,
+	))
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
+	}
+	server := httptest.NewServer(service.Handler())
+	defer server.Close()
+
+	start, challenge, paired, clientIdentity, clientEphemeral := pairHTTPClientWithKeys(t, server.URL)
+	clientSession := mustAppClientSession(t, intcrypto.FlowPairing, challenge.PairingID, paired, clientIdentity, clientEphemeral, start.PIN)
+	message := encryptTestKeyPressMessage(t, clientSession, paired.SessionID, []protocol.KeyModifier{protocol.KeyModifierCommand, protocol.KeyModifierShift})
+
+	conn, reader := mustOpenIOSAudioWebSocket(t, server.URL, "iphone-1")
+	defer conn.Close()
+	if err := writeMaskedWebSocketFrame(conn, 0x1, marshalIOSAudioWireMessage(t, message)); err != nil {
+		t.Fatalf("writeMaskedWebSocketFrame() error = %v", err)
+	}
+
+	responsePayload, opcode, err := readServerWebSocketFrame(reader)
+	if err != nil {
+		t.Fatalf("readServerWebSocketFrame(response) error = %v", err)
+	}
+	if opcode != 0x1 {
+		t.Fatalf("response opcode = %#x, want text frame", opcode)
+	}
+	var response iosAudioWebSocketResponse
+	if err := json.Unmarshal(responsePayload, &response); err != nil {
+		t.Fatalf("Unmarshal(response) error = %v", err)
+	}
+	if !response.OK {
+		t.Fatalf("response.OK = false, want true; response = %+v", response)
+	}
+	if response.FinalText != "" {
+		t.Fatalf("FinalText = %q, want empty for key press", response.FinalText)
+	}
+	if got, want := injector.request.Key, inject.KeyEnter; got != want {
+		t.Fatalf("KeyPress key = %q, want %q", got, want)
+	}
+	if got, want := injector.request.Modifiers, []inject.KeyModifier{inject.KeyModifierCommand, inject.KeyModifierShift}; !injectModifiersEqual(got, want) {
+		t.Fatalf("KeyPress modifiers = %v, want %v", got, want)
+	}
+	select {
+	case frame := <-probe.accepted:
+		t.Fatalf("ASR accepted frame for key press: %v", frame)
+	default:
+	}
+}
+
+func TestIOSAudioWebSocketKeyPressDoesNotRequireStreamingASR(t *testing.T) {
+	cfg, cfgPath := mustConfig(t)
+	injector := &recordingKeyInjector{}
+	service, err := NewWithPipeline(cfg, cfgPath, nil, NewPipeline(
+		newHealthProbeASR(nil),
+		&countingLLMProvider{},
+		injector,
+	))
+	if err != nil {
+		t.Fatalf("NewWithPipeline() error = %v", err)
+	}
+	server := httptest.NewServer(service.Handler())
+	defer server.Close()
+
+	start, challenge, paired, clientIdentity, clientEphemeral := pairHTTPClientWithKeys(t, server.URL)
+	clientSession := mustAppClientSession(t, intcrypto.FlowPairing, challenge.PairingID, paired, clientIdentity, clientEphemeral, start.PIN)
+	message := encryptTestKeyPressMessage(t, clientSession, paired.SessionID, []protocol.KeyModifier{protocol.KeyModifierAlt})
+
+	conn, reader := mustOpenIOSAudioWebSocket(t, server.URL, "iphone-1")
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+	if err := writeMaskedWebSocketFrame(conn, 0x1, marshalIOSAudioWireMessage(t, message)); err != nil {
+		t.Fatalf("writeMaskedWebSocketFrame() error = %v", err)
+	}
+
+	responsePayload, opcode, err := readServerWebSocketFrame(reader)
+	if err != nil {
+		t.Fatalf("readServerWebSocketFrame(response) error = %v", err)
+	}
+	if opcode != 0x1 {
+		t.Fatalf("response opcode = %#x, want text frame", opcode)
+	}
+	var response iosAudioWebSocketResponse
+	if err := json.Unmarshal(responsePayload, &response); err != nil {
+		t.Fatalf("Unmarshal(response) error = %v", err)
+	}
+	if !response.OK {
+		t.Fatalf("response.OK = false, want true; response = %+v", response)
+	}
+	if got, want := injector.request.Modifiers, []inject.KeyModifier{inject.KeyModifierAlt}; !injectModifiersEqual(got, want) {
+		t.Fatalf("KeyPress modifiers = %v, want %v", got, want)
+	}
+}
+
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	useFakeIOSPairingStore(t)
@@ -1223,6 +1324,25 @@ func encryptTestAudioMessagesWithStopSequence(t *testing.T, machine *session.Sta
 	return messages
 }
 
+func encryptTestKeyPressMessage(t *testing.T, machine *session.StateMachine, sessionID string, modifiers []protocol.KeyModifier) session.EncryptedMessage {
+	t.Helper()
+	payload := protocol.KeyPress{
+		Envelope:  protocol.Envelope{Version: protocol.VersionV1Alpha1, Type: protocol.MessageTypeKeyPress},
+		SessionID: sessionID,
+		Key:       "enter",
+		Modifiers: modifiers,
+	}
+	encoded, err := protocol.Encode(payload)
+	if err != nil {
+		t.Fatalf("Encode(KeyPress) error = %v", err)
+	}
+	message, err := machine.Encrypt(protocol.MessageTypeKeyPress, encoded)
+	if err != nil {
+		t.Fatalf("Encrypt(key_press) error = %v", err)
+	}
+	return message
+}
+
 func mustLoopbackAudioSession(t *testing.T, sessionID string) *session.StateMachine {
 	t.Helper()
 	key := bytes.Repeat([]byte{42}, 32)
@@ -1446,6 +1566,31 @@ func (i *blockingTestInjector) calls() int {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	return i.count
+}
+
+type recordingKeyInjector struct {
+	request inject.KeyPressRequest
+}
+
+func (i *recordingKeyInjector) Insert(context.Context, string) (inject.Receipt, error) {
+	return inject.Receipt{}, errors.New("Insert should not be called for key press")
+}
+
+func (i *recordingKeyInjector) KeyPress(_ context.Context, request inject.KeyPressRequest) error {
+	i.request = request
+	return nil
+}
+
+func injectModifiersEqual(a, b []inject.KeyModifier) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type healthProbeASR struct {

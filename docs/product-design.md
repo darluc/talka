@@ -44,7 +44,7 @@ The product is designed for fast personal dictation, short-form writing, chat re
 
 ### iOS App
 
-The iOS app should feel like a remote microphone rather than a full writing app.
+The iOS app should feel like a remote microphone rather than a full writing app. It also exposes a small Return shortcut below the main microphone control for cases where the user wants to send Enter directly without dictation.
 
 Primary UI:
 
@@ -53,6 +53,7 @@ Primary UI:
 - Current Mac device name.
 - Audio level or waveform animation.
 - Recording state.
+- Small Return key button below the microphone.
 - Basic error states for missing microphone permission, missing local network permission, lost connection, and failed pairing.
 
 User actions:
@@ -61,8 +62,11 @@ User actions:
 - Pair with PIN.
 - Start recording.
 - Stop recording.
+- Send Return directly to the paired Mac without ASR or LLM processing.
 - Cancel current recording.
 - Reconnect to a known Mac.
+
+The iOS settings drawer includes three persistent modifier toggles: `Cmd`, `Alt`, and `Shift`. When selected, those modifiers are sent with the Return shortcut to support combinations such as Cmd+Enter or Shift+Enter.
 
 The MVP can use a single-screen interface. Settings can remain minimal: selected Mac, reconnect, forget device.
 
@@ -132,7 +136,7 @@ For the first version, text insertion uses clipboard paste guarded by a native m
 6. Ask the broker to send Cmd+V through CoreGraphics.
 7. Restore the previous clipboard after a short delay when restoration is enabled and the user has not overwritten it.
 
-This approach is more compatible than synthesizing every character as keyboard events. Direct key event insertion can be added later as a fallback or advanced mode.
+This approach is more compatible than synthesizing every character as keyboard events. Talka only sends direct key events for explicit shortcuts, starting with the iOS Return button and optional Cmd, Alt, and Shift modifiers.
 
 The key product requirement is to avoid half-success. Talka must not silently leave the final text in the clipboard when Accessibility prevents paste into the target app. When paste cannot proceed, the user should see a clear recovery state and the recognized text should remain recoverable.
 

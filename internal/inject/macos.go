@@ -82,6 +82,27 @@ type PastePreflightDriver interface {
 	Preflight(ctx context.Context) error
 }
 
+type Key string
+
+const KeyEnter Key = "enter"
+
+type KeyModifier string
+
+const (
+	KeyModifierCommand KeyModifier = "cmd"
+	KeyModifierAlt     KeyModifier = "alt"
+	KeyModifierShift   KeyModifier = "shift"
+)
+
+type KeyPressRequest struct {
+	Key       Key
+	Modifiers []KeyModifier
+}
+
+type KeyPressDriver interface {
+	KeyPress(ctx context.Context, request KeyPressRequest) error
+}
+
 type Waiter func(ctx context.Context, delay time.Duration) error
 
 type MacOSPasteOptions struct {
@@ -198,6 +219,14 @@ func (i *MacOSPasteInjector) Insert(ctx context.Context, text string) (Receipt, 
 	return receipt, nil
 }
 
+func (i *MacOSPasteInjector) KeyPress(ctx context.Context, request KeyPressRequest) error {
+	keyDriver, ok := i.pasteDriver.(KeyPressDriver)
+	if !ok {
+		return fmt.Errorf("key press driver is not configured")
+	}
+	return keyDriver.KeyPress(ctx, request)
+}
+
 func insertErrorForPasteFailure(err error, text string) *InsertError {
 	code := FailureCodePasteFailed
 	message := pasteFailureRecoveryMessage
@@ -274,6 +303,49 @@ func (appleScriptPasteDriver) Paste(ctx context.Context) error {
 		return fmt.Errorf("%w: %s", ErrAccessibilityPermissionDenied, strings.TrimSpace(string(output)))
 	}
 	return fmt.Errorf("osascript paste: %w: %s", err, strings.TrimSpace(string(output)))
+}
+
+func (appleScriptPasteDriver) KeyPress(ctx context.Context, request KeyPressRequest) error {
+	var keyCode string
+	switch request.Key {
+	case KeyEnter:
+		keyCode = "36"
+	default:
+		return fmt.Errorf("unsupported key press %q", request.Key)
+	}
+
+	modifiers := make([]string, 0, len(request.Modifiers))
+	for _, modifier := range request.Modifiers {
+		switch modifier {
+		case KeyModifierCommand:
+			modifiers = append(modifiers, "command down")
+		case KeyModifierAlt:
+			modifiers = append(modifiers, "option down")
+		case KeyModifierShift:
+			modifiers = append(modifiers, "shift down")
+		default:
+			return fmt.Errorf("unsupported key modifier %q", modifier)
+		}
+	}
+
+	script := `tell application "System Events" to key code ` + keyCode
+	if len(modifiers) > 0 {
+		script += ` using {` + strings.Join(modifiers, ", ") + `}`
+	}
+
+	cmd := exec.CommandContext(ctx, "osascript", "-e", script)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	lower := strings.ToLower(string(output))
+	if strings.Contains(lower, "assistive access") ||
+		strings.Contains(lower, "not authorized to send apple events") ||
+		strings.Contains(lower, "not authorised to send apple events") ||
+		strings.Contains(lower, "-1743") {
+		return fmt.Errorf("%w: %s", ErrAccessibilityPermissionDenied, strings.TrimSpace(string(output)))
+	}
+	return fmt.Errorf("osascript key press: %w: %s", err, strings.TrimSpace(string(output)))
 }
 
 func sleepWaiter(ctx context.Context, delay time.Duration) error {

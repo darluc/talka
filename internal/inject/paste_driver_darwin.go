@@ -26,9 +26,26 @@ static void talka_post_command_v(void) {
 	CFRelease(keyUp);
 	CFRelease(source);
 }
+
+static void talka_post_key(CGKeyCode key, CGEventFlags flags) {
+	CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+	CGEventRef keyDown = CGEventCreateKeyboardEvent(source, key, true);
+	CGEventRef keyUp = CGEventCreateKeyboardEvent(source, key, false);
+
+	CGEventSetFlags(keyDown, flags);
+	CGEventSetFlags(keyUp, flags);
+
+	CGEventPost(kCGHIDEventTap, keyDown);
+	CGEventPost(kCGHIDEventTap, keyUp);
+
+	CFRelease(keyDown);
+	CFRelease(keyUp);
+	CFRelease(source);
+}
 */
 import "C"
 import "context"
+import "fmt"
 import "os"
 
 type nativePasteDriver struct{}
@@ -63,5 +80,36 @@ func (driver nativePasteDriver) Paste(ctx context.Context) error {
 	}
 
 	C.talka_post_command_v()
+	return nil
+}
+
+func (driver nativePasteDriver) KeyPress(ctx context.Context, request KeyPressRequest) error {
+	if err := driver.Preflight(ctx); err != nil {
+		return err
+	}
+
+	var key C.CGKeyCode
+	switch request.Key {
+	case KeyEnter:
+		key = 36
+	default:
+		return fmt.Errorf("unsupported key press %q", request.Key)
+	}
+
+	var flags C.CGEventFlags
+	for _, modifier := range request.Modifiers {
+		switch modifier {
+		case KeyModifierCommand:
+			flags |= C.kCGEventFlagMaskCommand
+		case KeyModifierAlt:
+			flags |= C.kCGEventFlagMaskAlternate
+		case KeyModifierShift:
+			flags |= C.kCGEventFlagMaskShift
+		default:
+			return fmt.Errorf("unsupported key modifier %q", modifier)
+		}
+	}
+
+	C.talka_post_key(key, flags)
 	return nil
 }

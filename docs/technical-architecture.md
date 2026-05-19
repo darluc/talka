@@ -226,6 +226,7 @@ audio_start
 audio_frame
 audio_stop
 audio_cancel
+key_press
 asr_partial
 asr_final
 text_final
@@ -364,6 +365,7 @@ Broker protocol:
 ```json
 {"op":"preflight"}
 {"op":"paste"}
+{"op":"key_press","key":"enter","modifiers":["cmd","shift"]}
 ```
 
 Broker responses:
@@ -384,6 +386,14 @@ Clipboard insertion steps:
 6. Go asks the broker to run `paste`.
 7. The broker posts Cmd+V with CoreGraphics.
 8. Go restores prior clipboard after a short delay if unchanged by the user.
+
+Direct key shortcut steps:
+
+1. iOS sends an encrypted `key_press` transport message over the paired WebSocket session.
+2. The Go service validates the supported key and modifier names.
+3. The request bypasses audio capture, ASR, and LLM cleanup.
+4. Go sends `key_press` to the Swift paste broker over the local Unix domain socket.
+5. The broker posts the Enter virtual key through CoreGraphics with any selected Cmd, Alt, and Shift flags.
 
 Failure handling:
 

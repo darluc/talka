@@ -115,6 +115,52 @@ enum RemoteMicRecordingState: String, Equatable {
     case failed
 }
 
+enum ReturnKeyModifier: String, CaseIterable, Hashable {
+    case command
+    case alt
+    case shift
+
+    var title: String {
+        switch self {
+        case .command:
+            return "Cmd"
+        case .alt:
+            return "Alt"
+        case .shift:
+            return "Shift"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .command:
+            return "⌘"
+        case .alt:
+            return "⌥"
+        case .shift:
+            return "⇧"
+        }
+    }
+
+    var wireValue: String {
+        switch self {
+        case .command:
+            return "cmd"
+        case .alt:
+            return "alt"
+        case .shift:
+            return "shift"
+        }
+    }
+}
+
+enum ReturnKeySendState: Equatable {
+    case idle
+    case sending
+    case sent
+    case failed
+}
+
 enum RemoteMicPowerToggleResult: Equatable {
     case none
     case showPairingPanel
@@ -240,6 +286,7 @@ protocol AudioStreamClient {
     func sendAudioFrame(sequence: Int, payload: Data) async throws
     func sendAudioStop(lastSequence: Int) async throws
     func sendAudioCancel(reason: String) async throws
+    func sendKeyPress(key: String, modifiers: [ReturnKeyModifier]) async throws
 }
 
 protocol MacConnectionMonitoring {
@@ -575,6 +622,12 @@ struct UnavailableAudioStreamClient: AudioStreamClient {
     func sendAudioCancel(reason: String) async throws {
         _ = reason
     }
+
+    func sendKeyPress(key: String, modifiers: [ReturnKeyModifier]) async throws {
+        _ = key
+        _ = modifiers
+        throw RemoteMicFlowError.recordingFailed(Self.unavailableMessage)
+    }
 }
 
 protocol BonjourNetServiceBrowsing: AnyObject {
@@ -658,6 +711,8 @@ final class RemoteMicShellViewModel: ObservableObject {
     @Published private(set) var isBusy = false
     @Published private(set) var recordingState: RemoteMicRecordingState = .idle
     @Published private(set) var audioLevel: Double = 0
+    @Published private(set) var returnKeyModifiers: Set<ReturnKeyModifier> = []
+    @Published private(set) var returnKeySendState: ReturnKeySendState = .idle
     @Published var selectedMacID: String?
     @Published var pin = ""
 
@@ -679,6 +734,7 @@ final class RemoteMicShellViewModel: ObservableObject {
     private var pcmDrainTask: Task<Void, Never>?
     private var firstFrameTimeoutTask: Task<Void, Never>?
     private var macConnectionMonitorTask: Task<Void, Never>?
+    private var returnKeyFeedbackTask: Task<Void, Never>?
 
     init(
         discoveryBrowser: RemoteMacDiscovering,
@@ -722,6 +778,7 @@ final class RemoteMicShellViewModel: ObservableObject {
 
     deinit {
         macConnectionMonitorTask?.cancel()
+        returnKeyFeedbackTask?.cancel()
     }
 
     var knownMacName: String? {
@@ -755,6 +812,13 @@ final class RemoteMicShellViewModel: ObservableObject {
         default:
             return .blue
         }
+    }
+
+    var returnKeyComboTitle: String {
+        let selectedSymbols = ReturnKeyModifier.allCases
+            .filter { returnKeyModifiers.contains($0) }
+            .map(\.symbol)
+        return (selectedSymbols + ["↵"]).joined(separator: " ")
     }
 
     func selectMac(id: String) {
@@ -874,6 +938,60 @@ final class RemoteMicShellViewModel: ObservableObject {
         lastErrorMessage = nil
         lastAudioDiagnostic = nil
         audioLevel = 0
+    }
+
+    func toggleReturnKeyModifier(_ modifier: ReturnKeyModifier) {
+        if returnKeyModifiers.contains(modifier) {
+            returnKeyModifiers.remove(modifier)
+        } else {
+            returnKeyModifiers.insert(modifier)
+        }
+    }
+
+    func sendReturnKey() async {
+        guard isConnectionActive else {
+            setReturnKeySendState(.failed)
+            lastErrorMessage = "Connect to a Mac before sending Return."
+            return
+        }
+        guard returnKeySendState != .sending else {
+            return
+        }
+
+        setReturnKeySendState(.sending)
+        do {
+            try await audioStreamClient.sendKeyPress(
+                key: "enter",
+                modifiers: ReturnKeyModifier.allCases.filter { returnKeyModifiers.contains($0) }
+            )
+            setReturnKeySendState(.sent)
+            lastErrorMessage = nil
+        } catch let error as RemoteMicFlowError {
+            setReturnKeySendState(.failed)
+            lastErrorMessage = error.errorDescription
+        } catch {
+            setReturnKeySendState(.failed)
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func setReturnKeySendState(_ state: ReturnKeySendState) {
+        returnKeyFeedbackTask?.cancel()
+        returnKeySendState = state
+        guard state == .sent || state == .failed else {
+            return
+        }
+
+        returnKeyFeedbackTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            await MainActor.run {
+                guard let self, self.returnKeySendState == state else {
+                    return
+                }
+                self.returnKeySendState = .idle
+                self.returnKeyFeedbackTask = nil
+            }
+        }
     }
 
     func forgetKnownMac() async {
@@ -1719,6 +1837,34 @@ final class SecureAudioStreamClient: AudioStreamClient {
         currentStreamSession = nil
     }
 
+    func sendKeyPress(key: String, modifiers: [ReturnKeyModifier]) async throws {
+        let session = try prepareStreamSession()
+        let task = webSocketConnector.makeWebSocketTask(url: session.audioWebSocketURL)
+        webSocket = task
+        task.resume()
+        defer { closeCurrentStream() }
+        try await send(type: "key_press", payload: ["version": "v1alpha1", "type": "key_press", "session_id": session.sessionID.base64EncodedString(), "key": key, "modifiers": modifiers.map(\.wireValue)] as [String: Any], session: session)
+        let responseText: String
+        do {
+            responseText = try await task.receive()
+        } catch {
+            throw RemoteMicFlowError.recordingFailed("The Mac closed the key press session before returning a result.")
+        }
+        let response: SecureAudioWebSocketServerResponse
+        do {
+            response = try decoder.decode(SecureAudioWebSocketServerResponse.self, from: Data(responseText.utf8))
+        } catch {
+            throw RemoteMicFlowError.recordingFailed("The Mac returned an invalid key press response.")
+        }
+        guard response.ok else {
+            throw RemoteMicDetailedError(
+                code: response.error?.code ?? "key_press_failed",
+                userMessage: response.error?.message ?? "The Mac could not send the key press.",
+                diagnostic: response.error?.diagnostic
+            )
+        }
+    }
+
     private func send(type: String, payload: [String: Any], session: SecureAudioSessionKeys) async throws {
         let plaintext = try JSONSerialization.data(withJSONObject: payload)
         print("[Talka] encrypting type=\(type) with seq=\(nextSequence)")
@@ -2069,6 +2215,11 @@ private final class UITestingAudioStreamClient: AudioStreamClient {
     func sendAudioCancel(reason: String) async throws {
         _ = reason
     }
+
+    func sendKeyPress(key: String, modifiers: [ReturnKeyModifier]) async throws {
+        _ = key
+        _ = modifiers
+    }
 }
 
 private final class UITestingMicrophoneSource: AudioCaptureSourcing {
@@ -2136,6 +2287,11 @@ struct ContentView: View {
                             isConnectionPanelPresented = false
                             isPairingPanelPresented = true
                         }
+                    }
+                },
+                sendReturnKey: {
+                    Task {
+                        await viewModel.sendReturnKey()
                     }
                 },
                 startRecording: startPressRecording,
@@ -2213,6 +2369,7 @@ struct RemoteMicControlSurface: View {
     var isPressingMicrophone: Bool
     var showConnectionPanel: () -> Void
     var togglePower: () -> Void
+    var sendReturnKey: () -> Void
     var startRecording: () -> Void
     var stopRecording: () -> Void
 
@@ -2272,11 +2429,59 @@ struct RemoteMicControlSurface: View {
                     stopRecording: stopRecording
                 )
 
+                Button(action: sendReturnKey) {
+                    ReturnKeyComboPill(
+                        title: viewModel.returnKeyComboTitle,
+                        state: viewModel.returnKeySendState
+                    )
+                    .frame(minWidth: 92, minHeight: 38)
+                }
+                .padding(.top, 57)
+                .buttonStyle(ReturnKeyMicButtonStyle(
+                    state: viewModel.returnKeySendState,
+                    isEnabled: viewModel.isConnectionActive && !viewModel.isBusy
+                ))
+                .disabled(!viewModel.isConnectionActive || viewModel.isBusy || viewModel.returnKeySendState == .sending)
+                .accessibilityLabel("Return")
+                .accessibilityIdentifier("returnKeyButton")
+
                 Spacer(minLength: 28)
             }
             .padding(18)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct ReturnKeyComboPill: View {
+    var title: String
+    var state: ReturnKeySendState
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: 17, weight: .heavy))
+                .monospacedDigit()
+
+            switch state {
+            case .sending:
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(.white)
+            case .sent:
+                Image(systemName: "checkmark")
+                    .font(.system(size: 12, weight: .heavy))
+            case .failed:
+                Image(systemName: "exclamationmark")
+                    .font(.system(size: 12, weight: .heavy))
+            case .idle:
+                EmptyView()
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 10)
+        .contentTransition(.symbolEffect(.replace))
+        .animation(.snappy(duration: 0.18), value: state)
     }
 }
 
@@ -2330,12 +2535,8 @@ private struct MicrophonePressButton: View {
                 .overlay {
                     if recordingState == .stopping {
                         ProgressView()
-                            .tint(.white)
+                            .tint(ringTint)
                             .controlSize(.large)
-                    } else {
-                        Image(systemName: "mic.fill")
-                            .font(.system(size: 58, weight: .semibold))
-                            .foregroundStyle(.white)
                     }
                 }
         }
@@ -2468,6 +2669,19 @@ struct ConnectionPanelOverlay: View {
                     }
                 }
 
+                HStack(spacing: 8) {
+                    ForEach(ReturnKeyModifier.allCases, id: \.self) { modifier in
+                        ReturnKeyModifierButton(
+                            title: modifier.title,
+                            isSelected: viewModel.returnKeyModifiers.contains(modifier),
+                            action: {
+                                viewModel.toggleReturnKeyModifier(modifier)
+                            }
+                        )
+                    }
+                }
+                .accessibilityIdentifier("returnModifierButtons")
+
                 Button {
                     withAnimation(.spring(response: 0.24, dampingFraction: 0.9)) {
                         isDebugExpanded.toggle()
@@ -2490,6 +2704,25 @@ struct ConnectionPanelOverlay: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("connectionPanel")
         }
+    }
+}
+
+private struct ReturnKeyModifierButton: View {
+    var title: String
+    var isSelected: Bool
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption.weight(.bold))
+                .frame(maxWidth: .infinity)
+                .frame(height: 34)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(isSelected ? .white : Color(uiColor: .label))
+        .background(isSelected ? Color.blue : Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -2656,5 +2889,63 @@ private struct GlassCircleButtonStyle: ButtonStyle {
             )
             .scaleEffect(configuration.isPressed ? 0.94 : 1)
             .shadow(color: tint.opacity(filled ? 0.30 : 0.08), radius: filled ? 12 : 8, y: filled ? 8 : 4)
+    }
+}
+
+private struct ReturnKeyMicButtonStyle: ButtonStyle {
+    var state: ReturnKeySendState
+    var isEnabled: Bool
+
+    private let returnKeyAcidCore = Color(red: 0.03, green: 0.07, blue: 0.05)
+    private let returnKeyAcidRing = Color(red: 0.71, green: 1.00, blue: 0.18)
+
+    private var returnKeyRingTint: Color {
+        guard isEnabled else {
+            return .secondary
+        }
+        switch state {
+        case .sent:
+            return .green
+        case .failed:
+            return .red
+        case .sending:
+            return returnKeyAcidRing
+        case .idle:
+            return returnKeyAcidRing
+        }
+    }
+
+    private var coreColor: Color {
+        switch state {
+        case .sent:
+            return .green
+        case .failed:
+            return .red
+        case .sending, .idle:
+            return returnKeyAcidCore
+        }
+    }
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.white)
+            .background(
+                Capsule()
+                    .fill(returnKeyRingTint.opacity(state == .idle ? 0.12 : 0.24))
+                    .scaleEffect(configuration.isPressed ? 1.03 : 1)
+            )
+            .background(
+                Capsule()
+                    .fill(coreColor)
+                    .overlay(
+                        Capsule()
+                            .stroke(returnKeyRingTint.opacity(0.36), lineWidth: state == .idle ? 4 : 5)
+                    )
+            )
+            .opacity(isEnabled ? 1 : 0.42)
+            .scaleEffect(configuration.isPressed ? 0.95 : 1)
+            .shadow(color: Color.black.opacity(isEnabled ? 0.24 : 0.05), radius: isEnabled ? 18 : 8, y: isEnabled ? 12 : 4)
+            .animation(.snappy(duration: 0.18), value: configuration.isPressed)
+            .animation(.snappy(duration: 0.18), value: state)
     }
 }

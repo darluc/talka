@@ -119,7 +119,7 @@ final class TalkaIOSTests: XCTestCase {
     func testAudioBreathingRingRadiusExpansionUsesWiderAudioRange() {
         XCTAssertEqual(
             AudioBreathingRingMetrics.radiusExpansion(for: 1),
-            AudioBreathingRingMetrics.baseRadiusExpansion + 15
+            AudioBreathingRingMetrics.baseRadiusExpansion + AudioBreathingRingMetrics.maximumAudioRadiusExpansion
         )
     }
 
@@ -402,6 +402,7 @@ final class TalkaIOSTests: XCTestCase {
             isPressingMicrophone: false,
             showConnectionPanel: {},
             togglePower: {},
+            sendReturnKey: {},
             startRecording: {},
             stopRecording: {}
         ).body)
@@ -410,6 +411,51 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertFalse(renderedStrings.contains("Connected"), renderedStrings.joined(separator: "\n"))
         XCTAssertFalse(renderedStrings.contains("Hold to Talk"), renderedStrings.joined(separator: "\n"))
         XCTAssertFalse(renderedStrings.contains("Darluc's MacBook Pro"), renderedStrings.joined(separator: "\n"))
+    }
+
+    func testRemoteControlShellShowsReturnKeyButton() throws {
+        let source = try String(contentsOf: talkaIOSAppSourceURL())
+        XCTAssertTrue(source.contains(#".accessibilityIdentifier("returnKeyButton")"#))
+        XCTAssertTrue(source.contains(#"ReturnKeyComboPill("#))
+    }
+
+    func testReturnKeyButtonUsesLiveComboPillStyle() throws {
+        let source = try String(contentsOf: talkaIOSAppSourceURL())
+        XCTAssertTrue(source.contains(#"ReturnKeyComboPill("#))
+        XCTAssertTrue(source.contains(#".frame(minWidth: 92, minHeight: 38)"#))
+        XCTAssertTrue(source.contains(#".padding(.top, 57)"#))
+        XCTAssertTrue(source.contains(#"ReturnKeyMicButtonStyle("#))
+        XCTAssertTrue(source.contains(#"returnKeyRingTint"#))
+        XCTAssertTrue(source.contains(#"returnKeyAcidCore"#))
+        XCTAssertTrue(source.contains(#"returnKeyAcidRing"#))
+        XCTAssertTrue(source.contains(#".font(.system(size: 17, weight: .heavy))"#))
+        XCTAssertFalse(source.contains(#"return Color(uiColor: .label)"#))
+    }
+
+    func testReturnKeyButtonShowsCurrentModifierCombination() {
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(),
+            identityStore: FakePairedIdentityStore(initialIdentity: pairedMacIdentity())
+        )
+        viewModel.toggleReturnKeyModifier(.command)
+
+        let renderedStrings = renderedViewStrings(in: RemoteMicControlSurface(
+            viewModel: viewModel,
+            isPressingMicrophone: false,
+            showConnectionPanel: {},
+            togglePower: {},
+            sendReturnKey: {},
+            startRecording: {},
+            stopRecording: {}
+        ).body)
+
+        XCTAssertTrue(renderedStrings.contains("⌘ ↵"), renderedStrings.joined(separator: "\n"))
+    }
+
+    func testMicrophoneButtonDoesNotRenderCenterMicSymbol() throws {
+        let source = try String(contentsOf: talkaIOSAppSourceURL())
+        XCTAssertFalse(source.contains(#"Image(systemName: "mic.fill")"#))
     }
 
     func testConnectionPanelIsSettingsOnlyWithoutPairingOrForgetControls() {
@@ -427,6 +473,52 @@ final class TalkaIOSTests: XCTestCase {
         XCTAssertFalse(renderedStrings.contains("PIN"), renderedStrings.joined(separator: "\n"))
         XCTAssertFalse(renderedStrings.contains("Connect"), renderedStrings.joined(separator: "\n"))
         XCTAssertFalse(renderedStrings.contains("Forget Device"), renderedStrings.joined(separator: "\n"))
+    }
+
+    func testConnectionPanelContainsReturnModifierButtons() throws {
+        let source = try String(contentsOf: talkaIOSAppSourceURL())
+        XCTAssertTrue(source.contains(#".accessibilityIdentifier("returnModifierButtons")"#))
+        XCTAssertTrue(source.contains(#"ReturnKeyModifierButton("#))
+    }
+
+    func testReturnKeyUsesSelectedModifiers() async {
+        let streamClient = RecordingAudioStreamClient()
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(reconnectResults: [.success(pairedMacIdentity())]),
+            identityStore: FakePairedIdentityStore(initialIdentity: pairedMacIdentity()),
+            audioStreamClient: streamClient
+        )
+
+        await viewModel.reconnectToKnownMac()
+        viewModel.toggleReturnKeyModifier(.command)
+        viewModel.toggleReturnKeyModifier(.shift)
+        await viewModel.sendReturnKey()
+
+        XCTAssertEqual(streamClient.events, [.keyPress(modifiers: [.command, .shift])])
+    }
+
+    func testReturnKeyShowsSendingAndSentFeedback() async {
+        let streamClient = BlockingKeyPressAudioStreamClient()
+        let viewModel = RemoteMicShellViewModel(
+            discoveryBrowser: FakeDiscoveryBrowser(),
+            sessionClient: FakeRemoteSessionClient(reconnectResults: [.success(pairedMacIdentity())]),
+            identityStore: FakePairedIdentityStore(initialIdentity: pairedMacIdentity()),
+            audioStreamClient: streamClient
+        )
+
+        await viewModel.reconnectToKnownMac()
+        let sendTask = Task { await viewModel.sendReturnKey() }
+        await waitUntil {
+            streamClient.keyPressStarted && viewModel.returnKeySendState == .sending
+        }
+
+        XCTAssertEqual(viewModel.returnKeySendState, .sending)
+
+        streamClient.finishKeyPress()
+        await sendTask.value
+
+        XCTAssertEqual(viewModel.returnKeySendState, .sent)
     }
 
     func testConnectionPanelShowsMacServiceNameInsteadOfIOSDeviceName() {
@@ -1271,6 +1363,13 @@ private func renderedViewStrings(in value: Any) -> [String] {
     collectStrings(in: value, depth: 0)
 }
 
+private func talkaIOSAppSourceURL() -> URL {
+    URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("TalkaIOSApp.swift")
+}
+
 private func collectStrings(in value: Any, depth: Int) -> [String] {
     guard depth < 80 else { return [] }
 
@@ -1419,6 +1518,13 @@ private func waitUntil(
                 recordedEvents.append(.cancel(reason: reason))
             }
         }
+
+        func sendKeyPress(key: String, modifiers: [ReturnKeyModifier]) async throws {
+            _ = key
+            lock.withLock {
+                recordedEvents.append(.keyPress(modifiers: modifiers))
+            }
+        }
     }
 
     private final class FailingAudioStreamClient: AudioStreamClient {
@@ -1451,6 +1557,11 @@ private func waitUntil(
 
         func sendAudioCancel(reason: String) async throws {
             _ = reason
+        }
+
+        func sendKeyPress(key: String, modifiers: [ReturnKeyModifier]) async throws {
+            _ = key
+            _ = modifiers
         }
     }
 
@@ -1507,6 +1618,11 @@ private func waitUntil(
             _ = reason
         }
 
+        func sendKeyPress(key: String, modifiers: [ReturnKeyModifier]) async throws {
+            _ = key
+            _ = modifiers
+        }
+
         func finishStop() {
             let continuation = lock.withLock {
                 let continuation = stopContinuation
@@ -1545,9 +1661,61 @@ private func waitUntil(
             _ = reason
         }
 
+        func sendKeyPress(key: String, modifiers: [ReturnKeyModifier]) async throws {
+            _ = key
+            _ = modifiers
+        }
+
         func finishBlockedFrame() {
             frameContinuation?.resume(returning: ())
             frameContinuation = nil
+        }
+    }
+
+    private final class BlockingKeyPressAudioStreamClient: AudioStreamClient {
+        private let lock = NSLock()
+        private var recordedKeyPressStarted = false
+        private var keyPressContinuation: CheckedContinuation<Void, Error>?
+
+        var keyPressStarted: Bool {
+            lock.withLock { recordedKeyPressStarted }
+        }
+
+        func sendAudioStart(metadata: AudioStreamMetadata) async throws {
+            _ = metadata
+        }
+
+        func sendAudioFrame(sequence: Int, payload: Data) async throws {
+            _ = sequence
+            _ = payload
+        }
+
+        func sendAudioStop(lastSequence: Int) async throws {
+            _ = lastSequence
+        }
+
+        func sendAudioCancel(reason: String) async throws {
+            _ = reason
+        }
+
+        func sendKeyPress(key: String, modifiers: [ReturnKeyModifier]) async throws {
+            _ = key
+            _ = modifiers
+            try await withCheckedThrowingContinuation { continuation in
+                lock.withLock {
+                    recordedKeyPressStarted = true
+                    keyPressContinuation = continuation
+                }
+            }
+        }
+
+        func finishKeyPress() {
+            let continuation = lock.withLock {
+                let continuation = keyPressContinuation
+                keyPressContinuation = nil
+                return continuation
+            }
+            continuation?.resume(returning: ())
         }
     }
 
@@ -1583,6 +1751,11 @@ private func waitUntil(
 
         func sendAudioCancel(reason: String) async throws {
             _ = reason
+        }
+
+        func sendKeyPress(key: String, modifiers: [ReturnKeyModifier]) async throws {
+            _ = key
+            _ = modifiers
         }
     }
 
@@ -1688,6 +1861,7 @@ private enum AudioStreamEvent: Equatable {
     case frame(sequence: Int, byteCount: Int)
     case stop(lastSequence: Int)
     case cancel(reason: String)
+    case keyPress(modifiers: [ReturnKeyModifier])
 }
 
 private final class RecordingSecureAudioWebSocketConnector: SecureAudioWebSocketConnecting {

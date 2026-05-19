@@ -15,7 +15,9 @@ import (
 const pasteBrokerTimeout = 2 * time.Second
 
 type brokerPasteRequest struct {
-	Op string `json:"op"`
+	Op        string   `json:"op"`
+	Key       string   `json:"key,omitempty"`
+	Modifiers []string `json:"modifiers,omitempty"`
 }
 
 type brokerPasteResponse struct {
@@ -70,7 +72,23 @@ func (d socketBrokerPasteDriver) Preflight(ctx context.Context) error {
 	return d.request(ctx, "preflight")
 }
 
+func (d socketBrokerPasteDriver) KeyPress(ctx context.Context, request KeyPressRequest) error {
+	modifiers := make([]string, 0, len(request.Modifiers))
+	for _, modifier := range request.Modifiers {
+		modifiers = append(modifiers, string(modifier))
+	}
+	return d.requestEnvelope(ctx, brokerPasteRequest{
+		Op:        "key_press",
+		Key:       string(request.Key),
+		Modifiers: modifiers,
+	})
+}
+
 func (d socketBrokerPasteDriver) request(ctx context.Context, op string) error {
+	return d.requestEnvelope(ctx, brokerPasteRequest{Op: op})
+}
+
+func (d socketBrokerPasteDriver) requestEnvelope(ctx context.Context, request brokerPasteRequest) error {
 	conn, err := d.dialer.DialContext(ctx, "unix", d.socketPath)
 	if err != nil {
 		return fmt.Errorf("paste broker socket: %w", err)
@@ -83,7 +101,7 @@ func (d socketBrokerPasteDriver) request(ctx context.Context, op string) error {
 		_ = conn.SetDeadline(time.Now().Add(pasteBrokerTimeout))
 	}
 
-	if err := json.NewEncoder(conn).Encode(brokerPasteRequest{Op: op}); err != nil {
+	if err := json.NewEncoder(conn).Encode(request); err != nil {
 		return fmt.Errorf("paste broker request: %w", err)
 	}
 

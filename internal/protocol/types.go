@@ -13,6 +13,7 @@ const (
 	MessageTypeAudioFrame     MessageType = "audio_frame"
 	MessageTypeAudioStop      MessageType = "audio_stop"
 	MessageTypeAudioCancel    MessageType = "audio_cancel"
+	MessageTypeKeyPress       MessageType = "key_press"
 	MessageTypeASRPartial     MessageType = "asr_partial"
 	MessageTypeASRFinal       MessageType = "asr_final"
 	MessageTypeTextFinal      MessageType = "text_final"
@@ -85,6 +86,21 @@ type AudioCancel struct {
 	SessionID string `json:"session_id"`
 	StreamID  string `json:"stream_id"`
 	Reason    string `json:"reason"`
+}
+
+type KeyModifier string
+
+const (
+	KeyModifierCommand KeyModifier = "cmd"
+	KeyModifierAlt     KeyModifier = "alt"
+	KeyModifierShift   KeyModifier = "shift"
+)
+
+type KeyPress struct {
+	Envelope
+	SessionID string        `json:"session_id"`
+	Key       string        `json:"key"`
+	Modifiers []KeyModifier `json:"modifiers,omitempty"`
 }
 
 type ASRPartial struct {

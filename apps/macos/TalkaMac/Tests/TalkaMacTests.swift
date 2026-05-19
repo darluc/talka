@@ -917,6 +917,18 @@ final class TalkaMacTests: XCTestCase {
         XCTAssertFalse(source.contains(#"Button("Diagnostics""#))
     }
 
+    func testPasteBrokerSupportsEnterKeyPressRequests() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("PasteBroker.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+
+        XCTAssertTrue(source.contains(#"request.op == "key_press""#))
+        XCTAssertTrue(source.contains("postKeyPress"))
+        XCTAssertTrue(source.contains(#""enter""#))
+    }
+
     func testRuntimeConfigGeneratorRefreshesStaleEmbeddedResourcePaths() throws {
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         let resourcesDir = tempDir.appendingPathComponent("resources", isDirectory: true)

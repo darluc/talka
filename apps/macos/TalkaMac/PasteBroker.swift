@@ -5,6 +5,8 @@ import Foundation
 final class LocalPasteBroker {
     private struct PasteRequest: Decodable {
         let op: String
+        let key: String?
+        let modifiers: [String]?
     }
 
     private struct PasteResponse: Encodable {
@@ -108,7 +110,7 @@ final class LocalPasteBroker {
 
     private func handle(clientFD: Int32) {
         guard let request = readRequest(from: clientFD),
-              request.op == "paste" || request.op == "preflight" else {
+              request.op == "paste" || request.op == "preflight" || request.op == "key_press" else {
             send(PasteResponse(ok: false, error: "bad_request"), to: clientFD)
             close(clientFD)
             return
@@ -121,6 +123,11 @@ final class LocalPasteBroker {
         }
 
         guard request.op == "paste" else {
+            if request.op == "key_press" {
+                handleKeyPress(request, clientFD: clientFD)
+                return
+            }
+
             send(PasteResponse(ok: true, error: nil), to: clientFD)
             close(clientFD)
             return
@@ -128,6 +135,27 @@ final class LocalPasteBroker {
 
         DispatchQueue.main.async {
             Self.postCommandV()
+            self.send(PasteResponse(ok: true, error: nil), to: clientFD)
+            close(clientFD)
+        }
+    }
+
+    private func handleKeyPress(_ request: PasteRequest, clientFD: Int32) {
+        guard request.key == "enter" else {
+            send(PasteResponse(ok: false, error: "bad_request"), to: clientFD)
+            close(clientFD)
+            return
+        }
+
+        let modifiers = request.modifiers ?? []
+        guard let flags = Self.eventFlags(for: modifiers) else {
+            send(PasteResponse(ok: false, error: "bad_request"), to: clientFD)
+            close(clientFD)
+            return
+        }
+
+        DispatchQueue.main.async {
+            Self.postKeyPress(virtualKey: 36, flags: flags)
             self.send(PasteResponse(ok: true, error: nil), to: clientFD)
             close(clientFD)
         }
@@ -168,15 +196,36 @@ final class LocalPasteBroker {
     }
 
     private static func postCommandV() {
+        postKeyPress(virtualKey: 9, flags: .maskCommand)
+    }
+
+    private static func postKeyPress(virtualKey: CGKeyCode, flags: CGEventFlags) {
         guard let source = CGEventSource(stateID: .hidSystemState),
-              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else {
+              let keyDown = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: virtualKey, keyDown: false) else {
             return
         }
 
-        keyDown.flags = .maskCommand
-        keyUp.flags = .maskCommand
+        keyDown.flags = flags
+        keyUp.flags = flags
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
+    }
+
+    private static func eventFlags(for modifiers: [String]) -> CGEventFlags? {
+        var flags = CGEventFlags()
+        for modifier in modifiers {
+            switch modifier {
+            case "cmd":
+                flags.insert(.maskCommand)
+            case "alt":
+                flags.insert(.maskAlternate)
+            case "shift":
+                flags.insert(.maskShift)
+            default:
+                return nil
+            }
+        }
+        return flags
     }
 }

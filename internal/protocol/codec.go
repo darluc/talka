@@ -34,6 +34,8 @@ func Decode(payload []byte) (any, error) {
 		target = &AudioStop{}
 	case MessageTypeAudioCancel:
 		target = &AudioCancel{}
+	case MessageTypeKeyPress:
+		target = &KeyPress{}
 	case MessageTypeASRPartial:
 		target = &ASRPartial{}
 	case MessageTypeASRFinal:
@@ -72,6 +74,8 @@ func dereferenceMessage(msg any) any {
 	case *AudioStop:
 		return *typed
 	case *AudioCancel:
+		return *typed
+	case *KeyPress:
 		return *typed
 	case *ASRPartial:
 		return *typed

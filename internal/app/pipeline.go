@@ -169,3 +169,14 @@ func (p *Pipeline) InsertText(ctx context.Context, text string) (inject.Receipt,
 	}
 	return p.injector.Insert(ctx, text)
 }
+
+func (p *Pipeline) PressKey(ctx context.Context, request inject.KeyPressRequest) error {
+	if p.injector == nil {
+		return fmt.Errorf("text injector is not configured")
+	}
+	keyDriver, ok := p.injector.(inject.KeyPressDriver)
+	if !ok {
+		return fmt.Errorf("key press injector is not configured")
+	}
+	return keyDriver.KeyPress(ctx, request)
+}

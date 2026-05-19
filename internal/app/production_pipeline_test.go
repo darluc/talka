@@ -6,6 +6,7 @@ import (
 
 	"talka/internal/asr"
 	"talka/internal/config"
+	"talka/internal/inject"
 )
 
 func TestNewASRProviderFromConfigBuildsSherpaONNXProvider(t *testing.T) {
@@ -38,6 +39,16 @@ func TestNewASRProviderFromConfigBuildsSherpaONNXProvider(t *testing.T) {
 	}
 	if _, ok := provider.(*asr.SherpaONNXProvider); !ok {
 		t.Fatalf("provider type = %T, want *asr.SherpaONNXProvider", provider)
+	}
+}
+
+func TestNewTextInjectorFromConfigSupportsKeyPress(t *testing.T) {
+	injector, err := newTextInjectorFromConfig(config.InjectionConfig{Mode: "clipboard_paste"})
+	if err != nil {
+		t.Fatalf("newTextInjectorFromConfig() error = %v", err)
+	}
+	if _, ok := injector.(inject.KeyPressDriver); !ok {
+		t.Fatalf("newTextInjectorFromConfig() = %T, want inject.KeyPressDriver", injector)
 	}
 }
 

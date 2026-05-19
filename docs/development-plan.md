@@ -181,6 +181,8 @@ Tasks:
 - Frame audio into 20 ms or 40 ms chunks.
 - Send encrypted `audio_start`, `audio_frame`, and `audio_stop` messages.
 - Add microphone button states.
+- Add a small Return shortcut below the microphone that sends encrypted `key_press` without ASR or LLM processing.
+- Add Cmd, Alt, and Shift modifier toggles to the iOS settings drawer.
 - Add waveform or level animation.
 - Add reconnect behavior for known paired Mac.
 
@@ -189,6 +191,7 @@ Acceptance:
 - Mac receives continuous PCM frames from iOS.
 - Audio frames can be reconstructed as a valid WAV during debug mode.
 - Recording start/stop state is clear.
+- The Return shortcut sends Enter, or Enter with selected modifiers, to the focused Mac app without starting the voice pipeline.
 - Network interruption produces a recoverable error.
 
 ## Milestone 8: End-To-End MVP

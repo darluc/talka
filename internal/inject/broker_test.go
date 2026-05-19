@@ -62,6 +62,50 @@ func TestSocketBrokerPasteDriverMapsAccessibilityError(t *testing.T) {
 	}
 }
 
+func TestSocketBrokerPasteDriverSendsKeyPressRequest(t *testing.T) {
+	socketPath := shortSocketPath(t)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+
+	requests := make(chan brokerPasteRequest, 1)
+	go serveSocketBroker(t, listener, func(request brokerPasteRequest) brokerPasteResponse {
+		requests <- request
+		return brokerPasteResponse{OK: true}
+	})
+
+	driver, ok := newSocketBrokerPasteDriver(socketPath)
+	if !ok {
+		t.Fatal("newSocketBrokerPasteDriver returned ok=false")
+	}
+
+	keyDriver, ok := driver.(KeyPressDriver)
+	if !ok {
+		t.Fatalf("broker driver = %T, want KeyPressDriver", driver)
+	}
+
+	err = keyDriver.KeyPress(context.Background(), KeyPressRequest{
+		Key:       KeyEnter,
+		Modifiers: []KeyModifier{KeyModifierCommand, KeyModifierAlt, KeyModifierShift},
+	})
+	if err != nil {
+		t.Fatalf("KeyPress returned error: %v", err)
+	}
+
+	request := <-requests
+	if request.Op != "key_press" {
+		t.Fatalf("request op = %q, want key_press", request.Op)
+	}
+	if request.Key != "enter" {
+		t.Fatalf("request key = %q, want enter", request.Key)
+	}
+	if got, want := request.Modifiers, []string{"cmd", "alt", "shift"}; !stringSlicesEqual(got, want) {
+		t.Fatalf("request modifiers = %v, want %v", got, want)
+	}
+}
+
 func TestMacOSPasteInjectorSocketBrokerPreflightFailureDoesNotChangeClipboard(t *testing.T) {
 	socketPath := shortSocketPath(t)
 	listener, err := net.Listen("unix", socketPath)
@@ -141,4 +185,16 @@ func shortSocketPath(t *testing.T) string {
 		_ = os.RemoveAll(dir)
 	})
 	return dir + "/paste.sock"
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

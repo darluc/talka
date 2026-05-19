@@ -78,15 +78,70 @@ func (a *App) handleIOSAudioStream(w http.ResponseWriter, r *http.Request) {
 	_ = conn.SetDeadline(deadline)
 	defer conn.SetDeadline(time.Time{})
 
-	if handled, err := a.handleIOSAudioStreamWithStreamingASR(r.Context(), conn, reader, deviceID, traceID, deadline); handled {
+	firstMessage, ok := a.readInitialIOSAudioWireMessage(conn, reader, deviceID, traceID)
+	if !ok {
+		return
+	}
+	if firstMessage.Type == protocol.MessageTypeKeyPress {
+		if err := a.handleIOSKeyPressWireMessage(r.Context(), conn, deviceID, traceID, deadline, firstMessage); err != nil {
+			a.logger.Error("iOS key press failed", "device_id", deviceID, "error", err)
+		}
+		return
+	}
+
+	if handled, err := a.handleIOSAudioStreamWithStreamingASR(r.Context(), conn, reader, deviceID, traceID, deadline, &firstMessage); handled {
 		if err != nil {
 			a.logger.Error("iOS streaming audio session failed", "device_id", deviceID, "error", err)
 		}
 		return
 	}
 
-	var messages []session.EncryptedMessage
+	messages := []session.EncryptedMessage{firstMessage}
 	for {
+		if messages[len(messages)-1].Type == protocol.MessageTypeAudioStop {
+			stopReceivedAt := time.Now()
+			a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
+				trace.AudioStopReceivedAt = stopReceivedAt
+				trace.BufferedMessages = len(messages)
+			})
+			a.logger.Info("iOS audio websocket stop received", "device_id", deviceID, "buffered_messages", len(messages))
+			ctx, cancel := context.WithTimeout(r.Context(), time.Until(deadline))
+			result, err := a.processEncryptedIOSAudioSession(ctx, deviceID, traceID, messages)
+			cancel()
+			if err != nil {
+				a.logger.Error("iOS audio session processing failed", "device_id", deviceID, "buffered_messages", len(messages), "error", err)
+				a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
+					trace.CompletedAt = time.Now()
+					trace.TotalAfterStopMS = durationMilliseconds(trace.CompletedAt.Sub(stopReceivedAt))
+				})
+				if writeErr := writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "process")); writeErr != nil {
+					a.logger.Error("iOS audio websocket error response write failed", "device_id", deviceID, "error", writeErr)
+				} else if closeErr := writeIOSWebSocketClose(conn, 1000, ""); closeErr != nil {
+					a.logger.Error("iOS audio websocket close write failed", "device_id", deviceID, "error", closeErr)
+				}
+				return
+			}
+			processedAt := time.Now()
+			a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
+				trace.CompletedAt = processedAt
+				trace.TotalAfterStopMS = durationMilliseconds(processedAt.Sub(stopReceivedAt))
+			})
+			a.logger.Info("iOS audio session processed", "trace_id", traceID, "device_id", deviceID, "buffered_messages", len(messages), "raw_transcript_chars", len(result.RawTranscript), "final_text_chars", len(result.FinalText))
+			responseWriteStartedAt := time.Now()
+			if err := writeIOSWebSocketJSON(conn, iosAudioWebSocketResponse{OK: true, FinalText: result.FinalText}); err != nil {
+				a.recordLatencyError(traceID, "response_write", err)
+				a.logger.Error("iOS audio websocket response write failed", "device_id", deviceID, "error", err)
+			} else if closeErr := writeIOSWebSocketClose(conn, 1000, ""); closeErr != nil {
+				a.recordLatencyError(traceID, "response_close", closeErr)
+				a.logger.Error("iOS audio websocket close write failed", "device_id", deviceID, "error", closeErr)
+			}
+			a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
+				trace.ResponseWriteMS = durationMilliseconds(time.Since(responseWriteStartedAt))
+			})
+			a.queueIOSFinalTextInsertion(traceID, deviceID, result.FinalText)
+			return
+		}
+
 		payload, opcode, err := readIOSWebSocketFrame(reader)
 		if err != nil {
 			a.recordLatencyError(traceID, "read", err)
@@ -122,54 +177,38 @@ func (a *App) handleIOSAudioStream(w http.ResponseWriter, r *http.Request) {
 		if shouldLogIOSAudioMessage(message, len(messages)) {
 			a.logger.Info("iOS audio websocket message received", "device_id", deviceID, "type", message.Type, "seq", message.Seq, "buffered_messages", len(messages))
 		}
-		if message.Type != protocol.MessageTypeAudioStop {
-			continue
-		}
-		stopReceivedAt := time.Now()
-		a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
-			trace.AudioStopReceivedAt = stopReceivedAt
-			trace.BufferedMessages = len(messages)
-		})
-		a.logger.Info("iOS audio websocket stop received", "device_id", deviceID, "buffered_messages", len(messages))
-		ctx, cancel := context.WithTimeout(r.Context(), time.Until(deadline))
-		result, err := a.processEncryptedIOSAudioSession(ctx, deviceID, traceID, messages)
-		cancel()
-		if err != nil {
-			a.logger.Error("iOS audio session processing failed", "device_id", deviceID, "buffered_messages", len(messages), "error", err)
-			a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
-				trace.CompletedAt = time.Now()
-				trace.TotalAfterStopMS = durationMilliseconds(trace.CompletedAt.Sub(stopReceivedAt))
-			})
-			if writeErr := writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "process")); writeErr != nil {
-				a.logger.Error("iOS audio websocket error response write failed", "device_id", deviceID, "error", writeErr)
-			} else if closeErr := writeIOSWebSocketClose(conn, 1000, ""); closeErr != nil {
-				a.logger.Error("iOS audio websocket close write failed", "device_id", deviceID, "error", closeErr)
-			}
-			return
-		}
-		processedAt := time.Now()
-		a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
-			trace.CompletedAt = processedAt
-			trace.TotalAfterStopMS = durationMilliseconds(processedAt.Sub(stopReceivedAt))
-		})
-		a.logger.Info("iOS audio session processed", "trace_id", traceID, "device_id", deviceID, "buffered_messages", len(messages), "raw_transcript_chars", len(result.RawTranscript), "final_text_chars", len(result.FinalText))
-		responseWriteStartedAt := time.Now()
-		if err := writeIOSWebSocketJSON(conn, iosAudioWebSocketResponse{OK: true, FinalText: result.FinalText}); err != nil {
-			a.recordLatencyError(traceID, "response_write", err)
-			a.logger.Error("iOS audio websocket response write failed", "device_id", deviceID, "error", err)
-		} else if closeErr := writeIOSWebSocketClose(conn, 1000, ""); closeErr != nil {
-			a.recordLatencyError(traceID, "response_close", closeErr)
-			a.logger.Error("iOS audio websocket close write failed", "device_id", deviceID, "error", closeErr)
-		}
-		a.latencyRecorder.Update(traceID, func(trace *LatencyTrace) {
-			trace.ResponseWriteMS = durationMilliseconds(time.Since(responseWriteStartedAt))
-		})
-		a.queueIOSFinalTextInsertion(traceID, deviceID, result.FinalText)
-		return
 	}
 }
 
-func (a *App) handleIOSAudioStreamWithStreamingASR(parentCtx context.Context, conn net.Conn, reader *bufio.Reader, deviceID, traceID string, deadline time.Time) (bool, error) {
+func (a *App) readInitialIOSAudioWireMessage(conn net.Conn, reader *bufio.Reader, deviceID, traceID string) (session.EncryptedMessage, bool) {
+	payload, opcode, err := readIOSWebSocketFrame(reader)
+	if err != nil {
+		a.recordLatencyError(traceID, "read", err)
+		a.completeLatencyTrace(traceID)
+		a.logger.Error("iOS audio websocket read failed", "device_id", deviceID, "error", err)
+		_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "read"))
+		return session.EncryptedMessage{}, false
+	}
+	if opcode == 0x8 {
+		a.completeLatencyTrace(traceID)
+		a.logger.Info("iOS audio websocket closed", "device_id", deviceID)
+		return session.EncryptedMessage{}, false
+	}
+	message, err := decodeIOSAudioWireMessage(payload)
+	if err != nil {
+		a.recordLatencyError(traceID, "decode", err)
+		a.completeLatencyTrace(traceID)
+		a.logger.Error("iOS audio websocket decode failed", "device_id", deviceID, "error", err)
+		_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "decode"))
+		return session.EncryptedMessage{}, false
+	}
+	if message.Type == protocol.MessageTypeAudioStart || message.Type == protocol.MessageTypeAudioStop || message.Type == protocol.MessageTypeKeyPress {
+		a.logger.Info("iOS audio websocket control message", "device_id", deviceID, "type", message.Type, "seq", message.Seq)
+	}
+	return message, true
+}
+
+func (a *App) handleIOSAudioStreamWithStreamingASR(parentCtx context.Context, conn net.Conn, reader *bufio.Reader, deviceID, traceID string, deadline time.Time, initialMessage *session.EncryptedMessage) (bool, error) {
 	machine, pipeline, streamingProvider, releasePipeline, ok, err := a.iosStreamingAudioResources(deviceID)
 	if err != nil {
 		a.recordLatencyError(traceID, "session", err)
@@ -201,25 +240,32 @@ func (a *App) handleIOSAudioStreamWithStreamingASR(parentCtx context.Context, co
 		}
 	}()
 
+	pendingMessage := initialMessage
 	for {
-		payload, opcode, err := readIOSWebSocketFrame(reader)
-		if err != nil {
-			a.recordLatencyError(traceID, "read", err)
-			a.completeLatencyTrace(traceID)
-			_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "read"))
-			return true, err
-		}
-		if opcode == 0x8 {
-			a.completeLatencyTrace(traceID)
-			a.logger.Info("iOS audio websocket closed", "device_id", deviceID, "buffered_messages", messages)
-			return true, nil
-		}
-		message, err := decodeIOSAudioWireMessage(payload)
-		if err != nil {
-			a.recordLatencyError(traceID, "decode", err)
-			a.completeLatencyTrace(traceID)
-			_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "decode"))
-			return true, err
+		var message session.EncryptedMessage
+		if pendingMessage != nil {
+			message = *pendingMessage
+			pendingMessage = nil
+		} else {
+			payload, opcode, err := readIOSWebSocketFrame(reader)
+			if err != nil {
+				a.recordLatencyError(traceID, "read", err)
+				a.completeLatencyTrace(traceID)
+				_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "read"))
+				return true, err
+			}
+			if opcode == 0x8 {
+				a.completeLatencyTrace(traceID)
+				a.logger.Info("iOS audio websocket closed", "device_id", deviceID, "buffered_messages", messages)
+				return true, nil
+			}
+			message, err = decodeIOSAudioWireMessage(payload)
+			if err != nil {
+				a.recordLatencyError(traceID, "decode", err)
+				a.completeLatencyTrace(traceID)
+				_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "decode"))
+				return true, err
+			}
 		}
 		messages++
 		if shouldLogIOSAudioMessage(message, messages) {
@@ -234,6 +280,23 @@ func (a *App) handleIOSAudioStreamWithStreamingASR(parentCtx context.Context, co
 		}
 
 		switch typed := decoded.(type) {
+		case protocol.KeyPress:
+			if err := a.handleIOSKeyPress(ctx, pipeline, typed); err != nil {
+				a.recordLatencyError(traceID, "key_press", err)
+				a.completeLatencyTrace(traceID)
+				_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "process"))
+				return true, err
+			}
+			if err := writeIOSWebSocketJSON(conn, iosAudioWebSocketResponse{OK: true}); err != nil {
+				a.recordLatencyError(traceID, "response_write", err)
+				return true, err
+			}
+			if err := writeIOSWebSocketClose(conn, 1000, ""); err != nil {
+				a.recordLatencyError(traceID, "response_close", err)
+				return true, err
+			}
+			a.completeLatencyTrace(traceID)
+			return true, nil
 		case protocol.AudioStart:
 			if started {
 				err := fmt.Errorf("duplicate audio_start")
@@ -384,6 +447,89 @@ func (a *App) iosStreamingAudioResources(deviceID string) (*session.StateMachine
 	}
 	release := a.retainPipelineLocked(a.pipeline)
 	return active.machine, a.pipeline, streamingProvider, release, true, nil
+}
+
+func (a *App) iosKeyPressResources(deviceID string) (*session.StateMachine, *Pipeline, func(), error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	active := a.iosSessions[deviceID]
+	if active == nil {
+		return nil, nil, nil, fmt.Errorf("paired iOS session is not active")
+	}
+	if a.pipeline == nil {
+		return nil, nil, nil, fmt.Errorf("audio pipeline is not configured")
+	}
+	release := a.retainPipelineLocked(a.pipeline)
+	return active.machine, a.pipeline, release, nil
+}
+
+func (a *App) handleIOSKeyPressWireMessage(parentCtx context.Context, conn net.Conn, deviceID, traceID string, deadline time.Time, message session.EncryptedMessage) error {
+	machine, pipeline, releasePipeline, err := a.iosKeyPressResources(deviceID)
+	if err != nil {
+		a.recordLatencyError(traceID, "session", err)
+		a.completeLatencyTrace(traceID)
+		_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "session"))
+		return err
+	}
+	defer releasePipeline()
+
+	ctx, cancel := context.WithTimeout(parentCtx, time.Until(deadline))
+	defer cancel()
+
+	decoded, err := decryptIOSAudioMessage(machine, message)
+	if err != nil {
+		a.recordLatencyError(traceID, "decrypt_decode", err)
+		a.completeLatencyTrace(traceID)
+		_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "process"))
+		return err
+	}
+	typed, ok := decoded.(protocol.KeyPress)
+	if !ok {
+		err := fmt.Errorf("unexpected key press payload type %T", decoded)
+		a.recordLatencyError(traceID, "decrypt_decode", err)
+		a.completeLatencyTrace(traceID)
+		_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "process"))
+		return err
+	}
+	if err := a.handleIOSKeyPress(ctx, pipeline, typed); err != nil {
+		a.recordLatencyError(traceID, "key_press", err)
+		a.completeLatencyTrace(traceID)
+		_ = writeIOSWebSocketError(conn, iosWebSocketErrorCode(err, "process"))
+		return err
+	}
+	if err := writeIOSWebSocketJSON(conn, iosAudioWebSocketResponse{OK: true}); err != nil {
+		a.recordLatencyError(traceID, "response_write", err)
+		return err
+	}
+	if err := writeIOSWebSocketClose(conn, 1000, ""); err != nil {
+		a.recordLatencyError(traceID, "response_close", err)
+		return err
+	}
+	a.completeLatencyTrace(traceID)
+	return nil
+}
+
+func (a *App) handleIOSKeyPress(ctx context.Context, pipeline *Pipeline, message protocol.KeyPress) error {
+	if message.Key != "enter" {
+		return fmt.Errorf("unsupported key press %q", message.Key)
+	}
+	modifiers := make([]inject.KeyModifier, 0, len(message.Modifiers))
+	for _, modifier := range message.Modifiers {
+		switch modifier {
+		case protocol.KeyModifierCommand:
+			modifiers = append(modifiers, inject.KeyModifierCommand)
+		case protocol.KeyModifierAlt:
+			modifiers = append(modifiers, inject.KeyModifierAlt)
+		case protocol.KeyModifierShift:
+			modifiers = append(modifiers, inject.KeyModifierShift)
+		default:
+			return fmt.Errorf("unsupported key modifier %q", modifier)
+		}
+	}
+	return pipeline.PressKey(ctx, inject.KeyPressRequest{
+		Key:       inject.KeyEnter,
+		Modifiers: modifiers,
+	})
 }
 
 func (a *App) queueIOSFinalTextInsertion(traceID, deviceID, finalText string) {

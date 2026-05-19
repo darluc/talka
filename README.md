@@ -4,11 +4,11 @@ Talka is a local-first voice input system. An iOS device acts as a remote microp
 
 ## Current Product Direction
 
-- iOS stays focused on connection, pairing, and voice capture.
+- iOS stays focused on connection, pairing, voice capture, and a minimal Return-key shortcut.
 - macOS owns service status, pairing PIN, AI/ASR configuration, connected-device visibility, diagnostics, and text insertion.
 - ASR uses the app-bundled sherpa-onnx streaming recognizer, defaulting to the bilingual zh-en Paraformer model.
 - AI cleanup defaults to a configurable Ollama/OpenAI-compatible endpoint.
-- Text insertion uses clipboard write plus a macOS Accessibility-driven Cmd+V, guarded by a native preflight check.
+- Text insertion uses clipboard write plus a macOS Accessibility-driven Cmd+V, guarded by a native preflight check. The same secure path can send a direct Return key press with optional Cmd, Alt, and Shift modifiers.
 
 ## macOS Settings Shape
 
@@ -45,6 +45,13 @@ Insertion flow:
 7. Go restores the previous clipboard when configured to do so.
 
 This avoids the old half-success state where recognized text reached the clipboard but could not be pasted.
+
+Shortcut flow:
+
+1. iOS sends an encrypted `key_press` message for `enter`.
+2. The message bypasses ASR and LLM processing.
+3. Go forwards the key request to the Swift broker.
+4. The broker posts Enter through CoreGraphics, including any selected Cmd, Alt, or Shift modifiers.
 
 ## Documentation
 

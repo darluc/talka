@@ -17,7 +17,7 @@ if ! xcrun simctl list devices available | grep -F "iPhone 16 (" >/dev/null 2>&1
   xcrun simctl create "iPhone 16" "$devicetype_id" "$runtime_id" >/dev/null
 fi
 
-./scripts/download-models.sh --verify-only
+./scripts/setup-dev.sh --verify-only
 go test ./...
 xcodebuild test -workspace apps/Talka.xcworkspace -scheme TalkaMac -destination 'platform=macOS'
 xcodebuild test -workspace apps/Talka.xcworkspace -scheme TalkaIOS -destination 'platform=iOS Simulator,name=iPhone 16'

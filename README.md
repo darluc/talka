@@ -1,5 +1,7 @@
 # Talka
 
+[中文说明](README.zh-CN.md)
+
 Talka is a local-first voice input system for macOS and iOS. An iPhone acts as a remote microphone, streams audio to a paired Mac over the local network, and the Mac transcribes, optionally cleans up, and inserts the final text into the active app.
 
 The project is built for personal dictation, short-form writing, chat replies, notes, and coding-adjacent text entry where local control matters. Audio stays on the local network, ASR runs on the Mac, and text cleanup can use a local Ollama server or another OpenAI-compatible endpoint.

@@ -1,65 +1,114 @@
 # Talka
 
-Talka is a local-first voice input system. An iOS device acts as a remote microphone, streams speech to a paired Mac, and the macOS app transcribes, cleans up, and inserts the final text into the active input field.
+Talka is a local-first voice input system for macOS and iOS. An iPhone acts as a remote microphone, streams audio to a paired Mac over the local network, and the Mac transcribes, optionally cleans up, and inserts the final text into the active app.
 
-## Current Product Direction
+The project is built for personal dictation, short-form writing, chat replies, notes, and coding-adjacent text entry where local control matters. Audio stays on the local network, ASR runs on the Mac, and text cleanup can use a local Ollama server or another OpenAI-compatible endpoint.
 
-- iOS stays focused on connection, pairing, voice capture, and a minimal Return-key shortcut.
-- macOS owns service status, pairing PIN, AI/ASR configuration, connected-device visibility, diagnostics, and text insertion.
-- ASR uses the app-bundled sherpa-onnx streaming recognizer, defaulting to the bilingual zh-en Paraformer model.
-- AI cleanup defaults to a configurable Ollama/OpenAI-compatible endpoint.
-- Text insertion uses clipboard write plus a macOS Accessibility-driven Cmd+V, guarded by a native preflight check. The same secure path can send a direct Return key press with optional Cmd, Alt, and Shift modifiers.
+## Features
 
-## macOS Settings Shape
+- iOS remote microphone with pairing, reconnect handling, and a compact recording UI.
+- macOS menu bar app with service status, pairing PIN, connected-device visibility, diagnostics, and runtime settings.
+- Local streaming ASR through bundled `sherpa-onnx` runtime assets and zh/en Paraformer model profiles.
+- Optional LLM cleanup through a configurable Ollama/OpenAI-compatible API endpoint.
+- Secure paired sessions using PIN-confirmed key exchange and encrypted audio/control messages.
+- Text insertion through a native macOS paste broker that checks Accessibility permission before touching the clipboard.
+- Direct Return-key shortcut from iOS, with optional Cmd, Alt, and Shift modifiers, bypassing the ASR/LLM pipeline.
 
-The current settings screen is intentionally compact:
+## Status
 
-- Top status area combines service state, Accessibility state, pairing PIN, and PIN countdown.
-- The `Service listening` pill can trigger service recovery or test the service path.
-- The Accessibility pill reflects native `AXIsProcessTrusted()` status and opens the permission flow.
-- `Interfaces` contains AI endpoint, AI model, timeout, and ONNX model selection.
-- ASR is ONNX-only in the product surface; legacy ASR provider names are migrated to ONNX config when the app refreshes its bundled runtime paths.
-- AI API and ASR API health are visible inline.
-- Connected devices appear at the bottom with device name and connection time.
-- Footer actions are limited to Diagnostics, Reset Changes, and Save.
+Talka is early-stage software. The macOS and iOS apps are usable for local development and internal testing, but release packaging is still intentionally simple:
 
-The menu bar menu only exposes:
+- GitHub Actions currently builds unsigned/ad-hoc macOS artifacts only.
+- iOS builds are expected to be produced locally through Xcode or the helper scripts.
+- Apple Developer ID signing, notarization, and iOS IPA distribution are not enabled in the default workflow.
 
-- Settings
-- Quit
+## Architecture
 
-The tray icon shows a green status dot only when the service, AI API, ASR API, and native Accessibility permission are all healthy.
+Talka has three main pieces:
 
-## Text Insertion Contract
+- `apps/macos/TalkaMac`: SwiftUI menu bar app, settings UI, diagnostics, process supervision, and native paste broker.
+- `apps/ios/TalkaIOS`: SwiftUI iOS app for discovery, pairing, microphone capture, recording controls, and shortcut buttons.
+- `cmd/talka-server` plus `internal/*`: Go control service, pairing/session protocol, audio pipeline, ASR/LLM providers, mDNS advertisement, and text injection orchestration.
 
-The macOS app starts a local Unix domain socket paste broker. The Go service talks to that broker instead of trying to synthesize the paste inside the background service process.
+At runtime:
 
-Insertion flow:
+1. The Mac advertises a `_talka._tcp` service on the local network.
+2. The iPhone discovers the Mac, pairs with a short PIN, and establishes an encrypted session.
+3. The iPhone streams PCM audio frames to the Go service.
+4. The Mac feeds audio into the local `sherpa-onnx` recognizer.
+5. The final transcript is optionally cleaned by the configured LLM endpoint.
+6. The Go service asks the Swift paste broker to insert text through the active macOS app.
 
-1. Go asks the Swift broker for a `preflight`.
-2. The broker checks `AXIsProcessTrusted()` in the signed app process.
-3. If Accessibility is missing, Go returns `accessibility_missing` without changing the clipboard.
-4. If preflight succeeds, Go writes the final text to the clipboard.
-5. Go asks the broker to `paste`.
-6. The broker posts Cmd+V through CoreGraphics.
-7. Go restores the previous clipboard when configured to do so.
+More detail is available in:
 
-This avoids the old half-success state where recognized text reached the clipboard but could not be pasted.
+- [Product behavior and UX](docs/product-design.md)
+- [Runtime and transport architecture](docs/technical-architecture.md)
+- [Engineering milestones](docs/development-plan.md)
 
-Shortcut flow:
+## Requirements
 
-1. iOS sends an encrypted `key_press` message for `enter`.
-2. The message bypasses ASR and LLM processing.
-3. Go forwards the key request to the Swift broker.
-4. The broker posts Enter through CoreGraphics, including any selected Cmd, Alt, or Shift modifiers.
+- macOS with Xcode installed.
+- Go 1.24 or newer.
+- `xcodebuild`, `xcrun`, `swift`, `python3`, and `shasum`.
+- Optional: Ollama running locally if you want local LLM cleanup.
+- For real ASR builds: `sherpa-onnx` runtime assets and model files prepared by the project scripts.
 
-## Documentation
+## Getting Started
 
-- Product behavior and UX: [docs/product-design.md](docs/product-design.md)
-- Runtime and transport architecture: [docs/technical-architecture.md](docs/technical-architecture.md)
-- Engineering milestones: [docs/development-plan.md](docs/development-plan.md)
+Clone the repository:
 
-## Release Builds
+```sh
+git clone https://github.com/darluc/talka.git
+cd talka
+```
+
+Prepare local runtime assets:
+
+```sh
+./scripts/build-sherpa-onnx-runtime.sh
+SHERPA_ONNX_MODEL_PROFILE=bilingual ./scripts/download-sherpa-onnx-model.sh
+mkdir -p .sisyphus/evidence
+```
+
+Verify the development environment:
+
+```sh
+./scripts/setup-dev.sh --verify-only
+```
+
+Run the full local test suite:
+
+```sh
+./scripts/test-all.sh
+```
+
+## Building
+
+Build and package the macOS app:
+
+```sh
+./scripts/package-macos-app.sh --arch arm64
+./scripts/package-macos-app.sh --arch x86_64
+```
+
+The packages are written to `dist/`:
+
+- `dist/TalkaMac-macOS-arm64.zip`
+- `dist/TalkaMac-macOS-x86_64.zip`
+
+Build iOS locally through Xcode:
+
+```sh
+open apps/Talka.xcworkspace
+```
+
+For a connected development device, the helper script can build and install the iOS app when your local Apple signing setup is valid:
+
+```sh
+./scripts/deploy-ios.sh
+```
+
+## Release Workflow
 
 Pushing a tag that starts with `v` triggers the GitHub release workflow:
 
@@ -68,20 +117,71 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The workflow builds and publishes these release artifacts:
+The workflow builds only the macOS app and publishes:
 
 - `TalkaMac-macOS-arm64.zip`
 - `TalkaMac-macOS-x86_64.zip`
 
-The release workflow builds only the macOS app and does not use Apple signing secrets. The macOS artifacts are ad-hoc signed app bundles, which are suitable for internal testing but are not notarized Developer ID releases.
+The workflow does not use Apple signing secrets. The generated macOS bundles are ad-hoc signed, which is useful for internal testing but not equivalent to a notarized Developer ID release.
 
-## Development Verification
+## Permissions
 
-Common checks:
+Talka needs macOS Accessibility permission to insert text into other apps. If System Settings shows Accessibility enabled but Talka still reports `Accessibility Required`, remove the old TalkaMac entry from:
 
-```sh
-go test ./...
-xcodebuild test -quiet -project apps/macos/TalkaMac/TalkaMac.xcodeproj -scheme TalkaMac
+`System Settings > Privacy & Security > Accessibility`
+
+Then add or enable the currently installed app again. Ad-hoc signed builds can change code-signing identity between packages, and macOS TCC can treat them as different authorization subjects.
+
+## Repository Layout
+
+```text
+apps/
+  macos/TalkaMac/      macOS SwiftUI app
+  ios/TalkaIOS/        iOS SwiftUI app
+cmd/
+  talka-server/        Go control service
+  talka-fake-asr/      local fake ASR helper for tests
+  talka-sherpa-transcribe/
+internal/
+  app/                 control API and pipeline wiring
+  asr/                 fake and sherpa-onnx ASR providers
+  config/              runtime config loading and validation
+  crypto/              pairing/session crypto helpers
+  inject/              text insertion abstraction
+  llm/                 Ollama/OpenAI-compatible cleanup provider
+  mdns/                Bonjour/mDNS service metadata
+  pairing/             pairing state and trusted devices
+  protocol/            wire protocol types
+  session/             encrypted session state
+scripts/               setup, packaging, smoke, and QA helpers
+docs/                  product and architecture notes
 ```
 
-If macOS Settings shows Accessibility enabled but Talka still reports `Accessibility Required`, remove the old TalkaMac entry from System Settings > Privacy & Security > Accessibility, then add or enable the currently installed app again. Ad-hoc signed builds can change code-signing identity between packages, and macOS TCC can treat them as different authorization subjects.
+## Contributing
+
+Issues and pull requests are welcome. Before opening a PR:
+
+```sh
+./scripts/test-all.sh
+git diff --check
+```
+
+Keep generated models, downloaded runtime binaries, local build products, and personal signing material out of commits.
+
+## Acknowledgements
+
+Talka builds on a number of open source projects and platform technologies:
+
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), used for local streaming ASR integration and macOS runtime artifacts.
+- [ONNX Runtime](https://onnxruntime.ai/), used underneath the packaged ONNX recognizer runtime.
+- [Ollama](https://ollama.com/), supported as the default local LLM cleanup endpoint.
+- [FunASR](https://github.com/modelscope/FunASR), referenced by earlier runtime scaffolding and model-conversion notes.
+- [ModelScope](https://modelscope.cn/) and [Hugging Face](https://huggingface.co/), used by scripts or notes for ASR model sources and mirrors.
+- [Go](https://go.dev/) and the Go modules used in this project, including `golang.org/x/crypto`, `golang.org/x/sys`, and `gopkg.in/yaml.v3`.
+- Apple's SwiftUI, AVFoundation, Network/Bonjour, CryptoKit, CoreGraphics, and Accessibility APIs, which provide the native macOS/iOS app surfaces and system integration.
+
+Please review each upstream project's license before redistributing bundled runtime or model artifacts.
+
+## License
+
+Talka is released under the [MIT License](LICENSE). Third-party runtime libraries, models, and tools keep their own upstream licenses.

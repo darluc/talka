@@ -6,6 +6,12 @@ Talka 是一个本地优先的 macOS + iOS 语音输入系统。iPhone 作为远
 
 这个项目面向个人听写、短文本写作、聊天回复、笔记和代码相关输入场景。它的核心目标是保留本地控制权：音频留在局域网内，ASR 在 Mac 上运行，文本清理可以使用本地 Ollama 服务或其它 OpenAI-compatible endpoint。
 
+## 介绍视频
+
+[![Talka 介绍视频](https://img.youtube.com/vi/g-xOx_MnD40/maxresdefault.jpg)](https://www.youtube.com/watch?v=g-xOx_MnD40)
+
+[观看介绍视频](https://www.youtube.com/watch?v=g-xOx_MnD40)
+
 ## 功能
 
 - iOS 远程麦克风，支持配对、重连和紧凑的录音界面。

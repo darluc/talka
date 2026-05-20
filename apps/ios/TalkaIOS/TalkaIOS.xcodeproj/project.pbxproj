@@ -275,7 +275,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.talka.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = talkaios.zvz.im;
 				PRODUCT_NAME = TalkaIOS;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -295,7 +295,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.talka.ios;
+				PRODUCT_BUNDLE_IDENTIFIER = talkaios.zvz.im;
 				PRODUCT_NAME = TalkaIOS;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -314,7 +314,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Tests/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.talka.ios.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = talkaios.zvz.im.tests;
 				PRODUCT_NAME = TalkaIOSTests;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -334,7 +334,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Tests/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.talka.ios.tests;
+				PRODUCT_BUNDLE_IDENTIFIER = talkaios.zvz.im.tests;
 				PRODUCT_NAME = TalkaIOSTests;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -353,7 +353,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = UITests/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.talka.ios.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = talkaios.zvz.im.uitests;
 				PRODUCT_NAME = TalkaIOSUITests;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -371,7 +371,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = UITests/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				PRODUCT_BUNDLE_IDENTIFIER = dev.talka.ios.uitests;
+				PRODUCT_BUNDLE_IDENTIFIER = talkaios.zvz.im.uitests;
 				PRODUCT_NAME = TalkaIOSUITests;
 				SDKROOT = iphoneos;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

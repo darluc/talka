@@ -43,5 +43,5 @@ fi
 xcodebuild test -workspace apps/Talka.xcworkspace -scheme TalkaMac -destination 'platform=macOS'
 xcrun simctl boot "$ios_simulator_id" >/dev/null 2>&1 || true
 xcrun simctl bootstatus "$ios_simulator_id" -b
-xcrun simctl terminate "$ios_simulator_id" dev.talka.ios >/dev/null 2>&1 || true
+xcrun simctl terminate "$ios_simulator_id" talkaios.zvz.im >/dev/null 2>&1 || true
 xcodebuild test -workspace apps/Talka.xcworkspace -scheme TalkaIOS -destination "platform=iOS Simulator,id=$ios_simulator_id" -only-testing:TalkaIOSTests

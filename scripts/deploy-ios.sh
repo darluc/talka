@@ -11,14 +11,14 @@
 #   - Xcode.app installed (not just Command Line Tools)
 #   - An Apple Developer account signed in via Xcode > Settings > Accounts
 #   - A paired iPhone connected via USB with Developer Mode enabled
-#   - The DEVELOPMENT_TEAM / signing identity must be valid for dev.talka.ios
+#   - The DEVELOPMENT_TEAM / signing identity must be valid for talkaios.zvz.im
 
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 WORKSPACE="apps/Talka.xcworkspace"
 SCHEME="TalkaIOS"
-BUNDLE_ID="dev.talka.ios"
+BUNDLE_ID="talkaios.zvz.im"
 DERIVED_DATA_PATH="/tmp/talka-ios-device-build"
 DEVELOPMENT_TEAM="${TALKA_IOS_TEAM:-475398SZ3P}"
 CODE_SIGN_IDENTITY="Apple Development"

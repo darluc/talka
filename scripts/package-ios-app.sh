@@ -122,7 +122,7 @@ case "$DEVICE_SIGNING" in
   <string>${APPLE_TEAM_ID}</string>
   <key>provisioningProfiles</key>
   <dict>
-    <key>dev.talka.ios</key>
+    <key>talkaios.zvz.im</key>
     <string>${IOS_PROVISIONING_PROFILE_NAME}</string>
   </dict>
   <key>stripSwiftSymbols</key>

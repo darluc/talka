@@ -72,33 +72,8 @@ The workflow builds and publishes these release artifacts:
 
 - `TalkaMac-macOS-arm64.zip`
 - `TalkaMac-macOS-x86_64.zip`
-- `TalkaIOS-iOS-simulator.zip`
-- `TalkaIOS-iOS-device-signed.ipa`
 
-The release workflow expects Apple signing material in GitHub Actions secrets. macOS artifacts are Developer ID signed, notarized, stapled, and zipped. The iOS device artifact is exported as a signed IPA using an ad-hoc provisioning profile.
-
-Required repository secrets:
-
-- `APPLE_TEAM_ID`: Apple Developer Team ID.
-- `BUILD_KEYCHAIN_PASSWORD`: random password for the temporary CI keychain.
-- `MACOS_DEVELOPER_ID_CERT_BASE64`: base64-encoded Developer ID Application `.p12`.
-- `MACOS_DEVELOPER_ID_CERT_PASSWORD`: password for the Developer ID `.p12`.
-- `APP_STORE_CONNECT_KEY_ID`: App Store Connect API key ID for notarization.
-- `APP_STORE_CONNECT_ISSUER_ID`: App Store Connect issuer ID for notarization.
-- `APP_STORE_CONNECT_API_KEY_BASE64`: base64-encoded App Store Connect `.p8`.
-- `IOS_DISTRIBUTION_CERT_BASE64`: base64-encoded Apple Distribution `.p12`.
-- `IOS_DISTRIBUTION_CERT_PASSWORD`: password for the iOS distribution `.p12`.
-- `IOS_PROVISIONING_PROFILE_BASE64`: base64-encoded `dev.talka.ios` provisioning profile.
-- `IOS_PROVISIONING_PROFILE_NAME`: provisioning profile name, not the filename.
-
-On macOS, encode local signing files with:
-
-```sh
-base64 -i DeveloperIDApplication.p12 | pbcopy
-base64 -i AppleDistribution.p12 | pbcopy
-base64 -i Talka_AdHoc.mobileprovision | pbcopy
-base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy
-```
+The release workflow builds only the macOS app and does not use Apple signing secrets. The macOS artifacts are ad-hoc signed app bundles, which are suitable for internal testing but are not notarized Developer ID releases.
 
 ## Development Verification
 

@@ -24,6 +24,7 @@ jobs:
       - name: Prepare ONNX runtime assets
         run: |
           ./scripts/build-sherpa-onnx-runtime.sh
+          SHERPA_ONNX_MODEL_PROFILE=trilingual ./scripts/download-sherpa-onnx-model.sh
           SHERPA_ONNX_MODEL_PROFILE=bilingual ./scripts/download-sherpa-onnx-model.sh
           mkdir -p .sisyphus/evidence
 

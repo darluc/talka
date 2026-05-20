@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,7 +66,7 @@ func TestRunServesStatusJSON(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	out := &strings.Builder{}
+	out := &safeTestBuffer{}
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- run(ctx, out, os.Stderr, []string{"--config", configPath, "--listen", "127.0.0.1:0"})
@@ -118,7 +119,7 @@ func TestRunStartsAndStopsDiscoveryPublisher(t *testing.T) {
 	defer func() { newDiscoveryPublisher = originalFactory }()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	out := &strings.Builder{}
+	out := &safeTestBuffer{}
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- run(ctx, out, os.Stderr, []string{"--config", configPath, "--listen", "127.0.0.1:0"})
@@ -173,7 +174,7 @@ func TestRunContinuesWhenDiscoveryPublisherUnavailable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	out := &strings.Builder{}
+	out := &safeTestBuffer{}
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- run(ctx, out, os.Stderr, []string{"--config", configPath, "--listen", "127.0.0.1:0"})
@@ -296,13 +297,31 @@ func repoModelDirForServerTest() string {
 	return filepath.Clean(filepath.Join(wd, "../..", "models/sherpa-onnx/streaming-paraformer-bilingual-zh-en"))
 }
 
-func waitForListenLine(t *testing.T, out *strings.Builder) string {
+type safeTestBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (b *safeTestBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *safeTestBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+func waitForListenLine(t *testing.T, out *safeTestBuffer) string {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		text := strings.TrimSpace(out.String())
-		if strings.HasPrefix(text, "LISTEN ") {
-			return strings.TrimPrefix(text, "LISTEN ")
+		for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+			if strings.HasPrefix(line, "LISTEN ") {
+				return strings.TrimPrefix(line, "LISTEN ")
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

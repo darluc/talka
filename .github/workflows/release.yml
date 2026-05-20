@@ -40,7 +40,31 @@ jobs:
       - name: Download bilingual sherpa-onnx model
         run: SHERPA_ONNX_MODEL_PROFILE=bilingual ./scripts/download-sherpa-onnx-model.sh
 
+      - name: Import Developer ID certificate
+        env:
+          BUILD_KEYCHAIN_PASSWORD: ${{ secrets.BUILD_KEYCHAIN_PASSWORD }}
+          MACOS_DEVELOPER_ID_CERT_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_CERT_BASE64 }}
+          MACOS_DEVELOPER_ID_CERT_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_CERT_PASSWORD }}
+        run: ./scripts/import-apple-signing-assets.sh macos
+
+      - name: Write App Store Connect API key
+        env:
+          APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+        run: |
+          test -n "$APP_STORE_CONNECT_API_KEY_BASE64" || {
+            echo "missing APP_STORE_CONNECT_API_KEY_BASE64 secret" >&2
+            exit 1
+          }
+          mkdir -p "$RUNNER_TEMP/appstoreconnect"
+          printf '%s' "$APP_STORE_CONNECT_API_KEY_BASE64" | base64 -D > "$RUNNER_TEMP/appstoreconnect/AuthKey.p8"
+
       - name: Package macOS app
+        env:
+          APP_STORE_CONNECT_API_KEY_PATH: ${{ runner.temp }}/appstoreconnect/AuthKey.p8
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          MACOS_CODE_SIGN_IDENTITY: "Developer ID Application"
+          MACOS_NOTARIZE: "1"
         run: ./scripts/package-macos-app.sh --arch "${{ matrix.arch }}"
 
       - name: Upload macOS artifact
@@ -62,7 +86,20 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: Import iOS distribution certificate and provisioning profile
+        env:
+          BUILD_KEYCHAIN_PASSWORD: ${{ secrets.BUILD_KEYCHAIN_PASSWORD }}
+          IOS_DISTRIBUTION_CERT_BASE64: ${{ secrets.IOS_DISTRIBUTION_CERT_BASE64 }}
+          IOS_DISTRIBUTION_CERT_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_CERT_PASSWORD }}
+          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
+        run: ./scripts/import-apple-signing-assets.sh ios
+
       - name: Package iOS app
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          IOS_DEVICE_SIGNING: signed
+          IOS_EXPORT_METHOD: ad-hoc
+          IOS_PROVISIONING_PROFILE_NAME: ${{ secrets.IOS_PROVISIONING_PROFILE_NAME }}
         run: ./scripts/package-ios-app.sh
 
       - name: Upload iOS artifacts
@@ -71,7 +108,7 @@ jobs:
           name: TalkaIOS-iOS
           path: |
             dist/TalkaIOS-iOS-simulator.zip
-            dist/TalkaIOS-iOS-device-unsigned.zip
+            dist/TalkaIOS-iOS-device-signed.ipa
           if-no-files-found: error
 
   github-release:
@@ -91,4 +128,4 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Talka ${{ github.ref_name }}
-          files: release-artifacts/*.zip
+          files: release-artifacts/*

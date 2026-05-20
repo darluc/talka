@@ -66,6 +66,9 @@ PRODUCTS_DIR="${DERIVED_DATA_PATH}/Build/Products/${CONFIGURATION}"
 APP_PATH="${PRODUCTS_DIR}/TalkaMac.app"
 ZIP_PATH="${DIST_DIR}/TalkaMac-macOS-${ARTIFACT_ARCH}.zip"
 BIN_APP_PATH="${ROOT_DIR}/bin/TalkaMac-${ARTIFACT_ARCH}.app"
+SIGN_IDENTITY="${MACOS_CODE_SIGN_IDENTITY:--}"
+NOTARIZE="${MACOS_NOTARIZE:-0}"
+NOTARY_KEY_PATH="${APP_STORE_CONNECT_API_KEY_PATH:-}"
 
 mkdir -p "$DIST_DIR"
 rm -rf "$DERIVED_DATA_PATH" "$ZIP_PATH"
@@ -97,7 +100,11 @@ if ! /usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP_PATH/Contents/In
   exit 1
 fi
 
-codesign --force --deep --sign - "$APP_PATH"
+if [ "$SIGN_IDENTITY" = "-" ]; then
+  codesign --force --deep --sign - "$APP_PATH"
+else
+  codesign --force --deep --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP_PATH"
+fi
 codesign --verify --deep --strict "$APP_PATH"
 
 mkdir -p "${ROOT_DIR}/bin"
@@ -105,6 +112,38 @@ rm -rf "$BIN_APP_PATH"
 ditto "$APP_PATH" "$BIN_APP_PATH"
 
 cd "$PRODUCTS_DIR"
+
+if [ "$NOTARIZE" = "1" ]; then
+  [ "$SIGN_IDENTITY" != "-" ] || {
+    printf 'packaging failed: MACOS_NOTARIZE=1 requires MACOS_CODE_SIGN_IDENTITY\n' >&2
+    exit 1
+  }
+  [ -n "$NOTARY_KEY_PATH" ] || {
+    printf 'packaging failed: MACOS_NOTARIZE=1 requires APP_STORE_CONNECT_API_KEY_PATH\n' >&2
+    exit 1
+  }
+  [ -n "${APP_STORE_CONNECT_KEY_ID:-}" ] || {
+    printf 'packaging failed: MACOS_NOTARIZE=1 requires APP_STORE_CONNECT_KEY_ID\n' >&2
+    exit 1
+  }
+  [ -n "${APP_STORE_CONNECT_ISSUER_ID:-}" ] || {
+    printf 'packaging failed: MACOS_NOTARIZE=1 requires APP_STORE_CONNECT_ISSUER_ID\n' >&2
+    exit 1
+  }
+
+  NOTARY_ZIP="${DIST_DIR}/TalkaMac-macOS-${ARTIFACT_ARCH}-notary.zip"
+  rm -f "$NOTARY_ZIP"
+  ditto -c -k --sequesterRsrc --keepParent "TalkaMac.app" "$NOTARY_ZIP"
+  xcrun notarytool submit "$NOTARY_ZIP" \
+    --key "$NOTARY_KEY_PATH" \
+    --key-id "$APP_STORE_CONNECT_KEY_ID" \
+    --issuer "$APP_STORE_CONNECT_ISSUER_ID" \
+    --wait
+  xcrun stapler staple "$APP_PATH"
+  xcrun stapler validate "$APP_PATH"
+  rm -f "$NOTARY_ZIP"
+fi
+
 ditto -c -k --sequesterRsrc --keepParent "TalkaMac.app" "$ZIP_PATH"
 
 printf 'APP=%s\n' "$APP_PATH"

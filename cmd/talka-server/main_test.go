@@ -17,6 +17,7 @@ import (
 )
 
 type fakePublisher struct {
+	mu        sync.Mutex
 	started   bool
 	stopped   bool
 	startErr  error
@@ -25,6 +26,8 @@ type fakePublisher struct {
 }
 
 func (p *fakePublisher) Start(ctx context.Context, desc mdns.Descriptor, port int) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.started = true
 	p.startDesc = desc
 	p.startPort = port
@@ -35,8 +38,16 @@ func (p *fakePublisher) Start(ctx context.Context, desc mdns.Descriptor, port in
 }
 
 func (p *fakePublisher) Stop(ctx context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.stopped = true
 	return nil
+}
+
+func (p *fakePublisher) snapshot() (started bool, stopped bool, desc mdns.Descriptor, port int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.started, p.stopped, p.startDesc, p.startPort
 }
 
 func TestRunRejectsInvalidConfigPath(t *testing.T) {
@@ -126,14 +137,12 @@ func TestRunStartsAndStopsDiscoveryPublisher(t *testing.T) {
 	}()
 
 	baseURL := waitForListenLine(t, out)
-	if !pub.started {
-		t.Fatal("publisher did not start")
+	desc, port := waitForPublisherStarted(t, pub)
+	if desc.ServiceType != mdns.ServiceType {
+		t.Fatalf("publisher ServiceType = %q, want %q", desc.ServiceType, mdns.ServiceType)
 	}
-	if pub.startDesc.ServiceType != mdns.ServiceType {
-		t.Fatalf("publisher ServiceType = %q, want %q", pub.startDesc.ServiceType, mdns.ServiceType)
-	}
-	if pub.startPort <= 0 {
-		t.Fatalf("publisher port = %d, want > 0", pub.startPort)
+	if port <= 0 {
+		t.Fatalf("publisher port = %d, want > 0", port)
 	}
 
 	resp, err := http.Get(baseURL + "/v1/status")
@@ -151,9 +160,7 @@ func TestRunStartsAndStopsDiscoveryPublisher(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("run() did not exit after cancel")
 	}
-	if !pub.stopped {
-		t.Fatal("publisher did not stop")
-	}
+	waitForPublisherStopped(t, pub)
 }
 
 func TestRunContinuesWhenDiscoveryPublisherUnavailable(t *testing.T) {
@@ -327,4 +334,31 @@ func waitForListenLine(t *testing.T, out *safeTestBuffer) string {
 	}
 	t.Fatalf("server did not print LISTEN line: %s", out.String())
 	return ""
+}
+
+func waitForPublisherStarted(t *testing.T, pub *fakePublisher) (mdns.Descriptor, int) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		started, _, desc, port := pub.snapshot()
+		if started {
+			return desc, port
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("publisher did not start")
+	return mdns.Descriptor{}, 0
+}
+
+func waitForPublisherStopped(t *testing.T, pub *fakePublisher) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		_, stopped, _, _ := pub.snapshot()
+		if stopped {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("publisher did not stop")
 }

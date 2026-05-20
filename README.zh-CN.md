@@ -112,7 +112,7 @@ open apps/Talka.xcworkspace
 
 ## Release Workflow
 
-推送 `v` 开头的 tag 会触发 GitHub release workflow：
+推送 `v` 或 `alpha.` 开头的 tag 会触发 GitHub release workflow：
 
 ```sh
 git tag v0.1.0

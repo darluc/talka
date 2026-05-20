@@ -112,7 +112,7 @@ For a connected development device, the helper script can build and install the 
 
 ## Release Workflow
 
-Pushing a tag that starts with `v` triggers the GitHub release workflow:
+Pushing a tag that starts with `v` or `alpha.` triggers the GitHub release workflow:
 
 ```sh
 git tag v0.1.0
